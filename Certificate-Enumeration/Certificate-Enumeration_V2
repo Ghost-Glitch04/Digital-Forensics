@@ -1,0 +1,453 @@
+# ============================================================================
+# Certificate Enumeration & Analysis Tool
+# ============================================================================
+# Purpose: Inventory, enumerate, and analyze certificates for threat hunting
+# Usage: Test certificate detection before production deployment
+# ============================================================================
+
+#Requires -RunAsAdministrator
+
+# ---------------------------------------------------------------------------
+# CONFIGURATION
+# ---------------------------------------------------------------------------
+$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$logFile = Join-Path $env:TEMP "CertificateAnalysis_$timestamp.log"
+
+# Search Criteria Configuration
+$SearchConfig = @{
+    # String patterns to search in Subject/Issuer
+    StringPatterns = @(
+        "OneStart",
+        "One Start",
+        "OneStart.AI",
+        "Electron",
+        "DO_NOT_TRUST",
+        "Test",
+        "Development"
+    )
+    
+    # Serial numbers to match (space-insensitive)
+    SerialNumbers = @(
+        "0333EAFBA707AABFD12644AEDC2E8C4E"  # Normalized format
+    )
+    
+    # Thumbprints to match (SHA1)
+    Thumbprints = @(
+        "BCBAA4F693051D69280D19D69DE73832B77B1C25"
+    )
+    
+    # Certificate stores to scan
+    Stores = @(
+        @{Location = "LocalMachine"; Store = "Root"; Risk = "CRITICAL"},
+        @{Location = "LocalMachine"; Store = "TrustedPublisher"; Risk = "HIGH"},
+        @{Location = "LocalMachine"; Store = "CA"; Risk = "MEDIUM"},
+        @{Location = "LocalMachine"; Store = "My"; Risk = "LOW"},
+        @{Location = "CurrentUser"; Store = "Root"; Risk = "CRITICAL"},
+        @{Location = "CurrentUser"; Store = "TrustedPublisher"; Risk = "HIGH"},
+        @{Location = "CurrentUser"; Store = "CA"; Risk = "MEDIUM"},
+        @{Location = "CurrentUser"; Store = "My"; Risk = "LOW"}
+    )
+    
+    # Analysis thresholds
+    RecentlyInstalledDays = 90
+    SuspiciousValidityYears = 20
+    
+    # Removal mode (set to $true to remove matched certificates)
+    RemovalMode = $false
+}
+
+# Results tracking
+$AnalysisResults = @{
+    TotalScanned = 0
+    StoresScanned = 0
+    MatchedCertificates = @()
+    MatchReasons = @{}
+    Summary = @{
+        ByStore = @{}
+        ByRisk = @{}
+        ByMatchType = @{}
+    }
+    StartTime = Get-Date
+    EndTime = $null
+}
+
+# ---------------------------------------------------------------------------
+# HELPER FUNCTIONS
+# ---------------------------------------------------------------------------
+
+function Write-Log {
+    param(
+        [string]$Message,
+        [ValidateSet('INFO','SUCCESS','WARNING','ERROR')]
+        [string]$Level = 'INFO'
+    )
+    
+    $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logMessage = "[$ts] [$Level] $Message"
+    Add-Content -Path $logFile -Value $logMessage -ErrorAction SilentlyContinue
+}
+
+function Get-CertificateAge {
+    param([DateTime]$NotBefore)
+    return [Math]::Round(((Get-Date) - $NotBefore).TotalDays, 0)
+}
+
+function Get-CertificateValidityPeriod {
+    param([DateTime]$NotBefore, [DateTime]$NotAfter)
+    return [Math]::Round(($NotAfter - $NotBefore).TotalDays / 365.25, 1)
+}
+
+function Test-CertificateMatch {
+    param(
+        [object]$Certificate,
+        [hashtable]$SearchCriteria
+    )
+    
+    $matchReasons = @()
+    
+    # Normalize serial number (remove spaces/colons)
+    $certSerial = $Certificate.SerialNumber -replace '[\s:]', ''
+    
+    # Test serial number
+    foreach ($serial in $SearchCriteria.SerialNumbers) {
+        if ($certSerial -eq $serial) {
+            $matchReasons += "Serial Number: $serial"
+        }
+    }
+    
+    # Test thumbprint
+    foreach ($thumbprint in $SearchCriteria.Thumbprints) {
+        if ($Certificate.Thumbprint -eq $thumbprint) {
+            $matchReasons += "Thumbprint: $thumbprint"
+        }
+    }
+    
+    # Test subject/issuer strings
+    foreach ($pattern in $SearchCriteria.StringPatterns) {
+        if ($Certificate.Subject -like "*$pattern*") {
+            $matchReasons += "Subject contains: $pattern"
+        }
+        if ($Certificate.Issuer -like "*$pattern*") {
+            $matchReasons += "Issuer contains: $pattern"
+        }
+    }
+    
+    return $matchReasons
+}
+
+function Get-CertificateHashes {
+    param([object]$Certificate)
+    
+    try {
+        $rawData = $Certificate.GetRawCertData()
+        
+        # Calculate MD5
+        $md5 = [System.Security.Cryptography.MD5]::Create()
+        $md5Hash = [BitConverter]::ToString($md5.ComputeHash($rawData)) -replace '-'
+        
+        # Calculate SHA256
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        $sha256Hash = [BitConverter]::ToString($sha256.ComputeHash($rawData)) -replace '-'
+        
+        return @{
+            MD5 = $md5Hash
+            SHA256 = $sha256Hash
+        }
+    } catch {
+        return @{
+            MD5 = "ERROR"
+            SHA256 = "ERROR"
+        }
+    }
+}
+
+function Format-CertificateDetails {
+    param(
+        [object]$Certificate,
+        [string]$Location,
+        [string]$StoreName,
+        [string]$RiskLevel,
+        [array]$MatchReasons
+    )
+    
+    $age = Get-CertificateAge -NotBefore $Certificate.NotBefore
+    $validity = Get-CertificateValidityPeriod -NotBefore $Certificate.NotBefore `
+        -NotAfter $Certificate.NotAfter
+    $hashes = Get-CertificateHashes -Certificate $Certificate
+    $isSelfSigned = ($Certificate.Subject -eq $Certificate.Issuer)
+    
+    return @{
+        Location = $Location
+        StoreName = $StoreName
+        RiskLevel = $RiskLevel
+        Subject = $Certificate.Subject
+        Issuer = $Certificate.Issuer
+        SerialNumber = $Certificate.SerialNumber
+        Thumbprint = $Certificate.Thumbprint
+        ThumbprintMD5 = $hashes.MD5
+        ThumbprintSHA256 = $hashes.SHA256
+        NotBefore = $Certificate.NotBefore
+        NotAfter = $Certificate.NotAfter
+        AgeDays = $age
+        ValidityYears = $validity
+        IsSelfSigned = $isSelfSigned
+        HasPrivateKey = $Certificate.HasPrivateKey
+        MatchReasons = $MatchReasons
+        FriendlyName = $Certificate.FriendlyName
+        Version = $Certificate.Version
+        SignatureAlgorithm = $Certificate.SignatureAlgorithm.FriendlyName
+    }
+}
+
+function Remove-MatchedCertificate {
+    param(
+        [object]$Certificate,
+        [string]$Location,
+        [string]$StoreName
+    )
+    
+    try {
+        $store = New-Object System.Security.Cryptography.X509Certificates.X509Store(
+            $StoreName, $Location
+        )
+        $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        
+        $store.Remove($Certificate)
+        Start-Sleep -Milliseconds 500
+        
+        # Verify removal
+        $checkCert = $store.Certificates | Where-Object { 
+            $_.Thumbprint -eq $Certificate.Thumbprint 
+        }
+        
+        $store.Close()
+        
+        if (-not $checkCert) {
+            return @{ Success = $true; Message = "Successfully removed" }
+        } else {
+            return @{ Success = $false; Message = "Still present after removal" }
+        }
+    } catch {
+        return @{ Success = $false; Message = $_.Exception.Message }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# MAIN ANALYSIS FUNCTION
+# ---------------------------------------------------------------------------
+
+function Start-CertificateAnalysis {
+    param([hashtable]$Config)
+    
+    Write-Log "========================================" -Level INFO
+    Write-Log "CERTIFICATE ANALYSIS STARTED" -Level INFO
+    Write-Log "Removal Mode: $($Config.RemovalMode)" -Level INFO
+    Write-Log "========================================" -Level INFO
+    
+    Write-Log "" -Level INFO
+    Write-Log "SEARCH CRITERIA:" -Level INFO
+    Write-Log "  String Patterns: $($Config.StringPatterns -join ', ')" -Level INFO
+    Write-Log "  Serial Numbers: $($Config.SerialNumbers -join ', ')" -Level INFO
+    Write-Log "  Thumbprints: $($Config.Thumbprints -join ', ')" -Level INFO
+    Write-Log "" -Level INFO
+    
+    foreach ($storeConfig in $Config.Stores) {
+        $location = $storeConfig.Location
+        $storeName = $storeConfig.Store
+        $riskLevel = $storeConfig.Risk
+        
+        $AnalysisResults.StoresScanned++
+        
+        Write-Log "Scanning: $location\$storeName (Risk: $riskLevel)" -Level INFO
+        
+        try {
+            $store = New-Object System.Security.Cryptography.X509Certificates.X509Store(
+                $storeName, $location
+            )
+            $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+            
+            $certificates = $store.Certificates
+            $storeTotal = $certificates.Count
+            $AnalysisResults.TotalScanned += $storeTotal
+            
+            Write-Log "  Found $storeTotal certificate(s) in store" -Level INFO
+            
+            # Initialize store counter
+            if (-not $AnalysisResults.Summary.ByStore.ContainsKey("$location\$storeName")) {
+                $AnalysisResults.Summary.ByStore["$location\$storeName"] = 0
+            }
+            
+            foreach ($cert in $certificates) {
+                $matchReasons = Test-CertificateMatch -Certificate $cert `
+                    -SearchCriteria $Config
+                
+                if ($matchReasons.Count -gt 0) {
+                    Write-Log "  [MATCH] Subject: $($cert.Subject.Substring(0, [Math]::Min(60, $cert.Subject.Length)))" -Level WARNING
+                    Write-Log "    Thumbprint: $($cert.Thumbprint)" -Level WARNING
+                    Write-Log "    Match Reasons: $($matchReasons -join ' | ')" -Level WARNING
+                    
+                    $details = Format-CertificateDetails -Certificate $cert `
+                        -Location $location -StoreName $storeName `
+                        -RiskLevel $riskLevel -MatchReasons $matchReasons
+                    
+                    $AnalysisResults.MatchedCertificates += $details
+                    $AnalysisResults.Summary.ByStore["$location\$storeName"]++
+                    
+                    # Track match reasons
+                    foreach ($reason in $matchReasons) {
+                        if (-not $AnalysisResults.MatchReasons.ContainsKey($reason)) {
+                            $AnalysisResults.MatchReasons[$reason] = 0
+                        }
+                        $AnalysisResults.MatchReasons[$reason]++
+                    }
+                    
+                    # Track by risk level
+                    if (-not $AnalysisResults.Summary.ByRisk.ContainsKey($riskLevel)) {
+                        $AnalysisResults.Summary.ByRisk[$riskLevel] = 0
+                    }
+                    $AnalysisResults.Summary.ByRisk[$riskLevel]++
+                    
+                    # Removal mode
+                    if ($Config.RemovalMode) {
+                        Write-Log "    [REMOVING] Attempting removal..." -Level WARNING
+                        
+                        $store.Close()
+                        $removalResult = Remove-MatchedCertificate -Certificate $cert `
+                            -Location $location -StoreName $storeName
+                        
+                        if ($removalResult.Success) {
+                            Write-Log "    [SUCCESS] $($removalResult.Message)" -Level SUCCESS
+                            $details.RemovalStatus = "REMOVED"
+                        } else {
+                            Write-Log "    [FAILED] $($removalResult.Message)" -Level ERROR
+                            $details.RemovalStatus = "FAILED: $($removalResult.Message)"
+                        }
+                        
+                        # Reopen store for next iteration
+                        $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+                    }
+                }
+            }
+            
+            $store.Close()
+            
+        } catch {
+            Write-Log "  [ERROR] Failed to scan store: $($_.Exception.Message)" -Level ERROR
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# GENERATE DETAILED REPORT
+# ---------------------------------------------------------------------------
+
+function Write-DetailedReport {
+    Write-Log "" -Level INFO
+    Write-Log "========================================" -Level INFO
+    Write-Log "DETAILED CERTIFICATE REPORT" -Level INFO
+    Write-Log "========================================" -Level INFO
+    
+    if ($AnalysisResults.MatchedCertificates.Count -eq 0) {
+        Write-Log "[OK] No certificates matched search criteria" -Level SUCCESS
+        return
+    }
+    
+    Write-Log "Total Matches: $($AnalysisResults.MatchedCertificates.Count)" -Level WARNING
+    Write-Log "" -Level INFO
+    
+    for ($i = 0; $i -lt $AnalysisResults.MatchedCertificates.Count; $i++) {
+        $cert = $AnalysisResults.MatchedCertificates[$i]
+        
+        Write-Log "--- CERTIFICATE $($i + 1) ---" -Level INFO
+        Write-Log "Location: $($cert.Location)\$($cert.StoreName)" -Level INFO
+        Write-Log "Risk Level: $($cert.RiskLevel)" -Level WARNING
+        Write-Log "" -Level INFO
+        Write-Log "Subject: $($cert.Subject)" -Level INFO
+        Write-Log "Issuer: $($cert.Issuer)" -Level INFO
+        Write-Log "Friendly Name: $($cert.FriendlyName)" -Level INFO
+        Write-Log "" -Level INFO
+        Write-Log "Serial Number: $($cert.SerialNumber)" -Level INFO
+        Write-Log "Thumbprint (SHA1): $($cert.Thumbprint)" -Level INFO
+        Write-Log "Thumbprint (MD5): $($cert.ThumbprintMD5)" -Level INFO
+        Write-Log "Thumbprint (SHA256): $($cert.ThumbprintSHA256)" -Level INFO
+        Write-Log "" -Level INFO
+        Write-Log "Valid From: $($cert.NotBefore)" -Level INFO
+        Write-Log "Valid To: $($cert.NotAfter)" -Level INFO
+        Write-Log "Age: $($cert.AgeDays) days" -Level INFO
+        Write-Log "Validity Period: $($cert.ValidityYears) years" -Level INFO
+        Write-Log "" -Level INFO
+        Write-Log "Self-Signed: $($cert.IsSelfSigned)" -Level INFO
+        Write-Log "Has Private Key: $($cert.HasPrivateKey)" -Level INFO
+        Write-Log "Signature Algorithm: $($cert.SignatureAlgorithm)" -Level INFO
+        Write-Log "Version: $($cert.Version)" -Level INFO
+        Write-Log "" -Level INFO
+        Write-Log "Match Reasons:" -Level WARNING
+        foreach ($reason in $cert.MatchReasons) {
+            Write-Log "  * $reason" -Level WARNING
+        }
+        
+        if ($cert.RemovalStatus) {
+            Write-Log "" -Level INFO
+            Write-Log "Removal Status: $($cert.RemovalStatus)" -Level INFO
+        }
+        
+        Write-Log "" -Level INFO
+    }
+}
+
+function Write-SummaryReport {
+    $AnalysisResults.EndTime = Get-Date
+    $duration = $AnalysisResults.EndTime - $AnalysisResults.StartTime
+    
+    Write-Log "========================================" -Level INFO
+    Write-Log "ANALYSIS SUMMARY" -Level INFO
+    Write-Log "========================================" -Level INFO
+    Write-Log "Duration: $([Math]::Round($duration.TotalSeconds, 2)) seconds" -Level INFO
+    Write-Log "Stores Scanned: $($AnalysisResults.StoresScanned)" -Level INFO
+    Write-Log "Total Certificates: $($AnalysisResults.TotalScanned)" -Level INFO
+    Write-Log "Matched Certificates: $($AnalysisResults.MatchedCertificates.Count)" -Level WARNING
+    Write-Log "" -Level INFO
+    
+    if ($AnalysisResults.MatchedCertificates.Count -gt 0) {
+        Write-Log "MATCHES BY STORE:" -Level INFO
+        foreach ($store in $AnalysisResults.Summary.ByStore.GetEnumerator() | Sort-Object Value -Descending) {
+            Write-Log "  $($store.Key): $($store.Value)" -Level WARNING
+        }
+        Write-Log "" -Level INFO
+        
+        Write-Log "MATCHES BY RISK LEVEL:" -Level INFO
+        foreach ($risk in $AnalysisResults.Summary.ByRisk.GetEnumerator() | Sort-Object Key) {
+            Write-Log "  $($risk.Key): $($risk.Value)" -Level WARNING
+        }
+        Write-Log "" -Level INFO
+        
+        Write-Log "MATCH REASON BREAKDOWN:" -Level INFO
+        foreach ($reason in $AnalysisResults.MatchReasons.GetEnumerator() | Sort-Object Value -Descending) {
+            Write-Log "  $($reason.Key): $($reason.Value)" -Level WARNING
+        }
+    }
+    
+    Write-Log "" -Level INFO
+    Write-Log "Log file: $logFile" -Level INFO
+    Write-Log "========================================" -Level INFO
+}
+
+# ---------------------------------------------------------------------------
+# EXECUTION
+# ---------------------------------------------------------------------------
+
+Start-CertificateAnalysis -Config $SearchConfig
+Write-DetailedReport
+Write-SummaryReport
+
+# Display results
+Write-Output ""
+Write-Output "=========================================="
+Write-Output "Certificate Analysis Complete!"
+Write-Output "Matched: $($AnalysisResults.MatchedCertificates.Count) certificates"
+Write-Output "Log File: $logFile"
+Write-Output "=========================================="
+Write-Output ""
+
+# Display log contents
+Get-Content $logFile
