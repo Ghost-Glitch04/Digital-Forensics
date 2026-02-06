@@ -190,5 +190,4 @@ Write-Log "Log saved to: $logFile"
 Write-Log ("=" * 80)
 
 # Display the log file contents
-Write-Host "`nEnumeration complete. Log file: $logFile`n"
 Get-Content $logFile
