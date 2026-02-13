@@ -83,36 +83,7 @@ try {
     $errorMsg | Out-File $summaryLog -Append
     Get-Content $summaryLog
     exit 1
-}
-
-# Run Chainsaw hunt
-Write-Host "[*] Running Chainsaw hunt (may take 2-5 minutes)..."
-"[*] Starting hunt analysis at $(Get-Date -Format 'HH:mm:ss')" | 
-    Out-File $summaryLog -Append
-
-try {
-    $huntStart = Get-Date
-    & "$dir\chainsaw.exe" hunt "C:\Windows\System32\winevt\Logs" `
-        --output $logFile 2>&1 | Out-Null
-    $huntEnd = Get-Date
-    $duration = ($huntEnd - $huntStart).TotalSeconds
-    
-    if (Test-Path $logFile) {
-        $lineCount = (Get-Content $logFile | Measure-Object -Line).Lines
-        Write-Host "[OK] Hunt complete - $lineCount results in $duration seconds"
-        "[OK] Hunt complete - $lineCount results" | 
-            Out-File $summaryLog -Append
-        "[*] Duration: $duration seconds" | Out-File $summaryLog -Append
-    } else {
-        throw "Results file not generated"
-    }
-} catch {
-    $errorMsg = "[!] Hunt failed: $($_.Exception.Message)"
-    Write-Host $errorMsg
-    $errorMsg | Out-File $summaryLog -Append
-    Get-Content $summaryLog
-    exit 1
-}
+}    
 
 # File Cleanup
 Write-Host "[*] Cleaning up temporary files..."
