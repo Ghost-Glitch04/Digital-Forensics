@@ -62,9 +62,18 @@ try {
 Write-Host "[*] Extracting files..."
 try {
     Expand-Archive -Path $zip -DestinationPath $dir -Force
-    if (Test-Path "$dir\chainsaw.exe") {
+    
+    # Search for chainsaw.exe (handles nested directories)
+    $chainsawExe = Get-ChildItem -Path $dir -Filter "chainsaw.exe" `
+        -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    
+    if ($chainsawExe) {
+        # Update $dir to point to the actual location of chainsaw.exe
+        $dir = $chainsawExe.DirectoryName
         Write-Host "[OK] Extraction complete"
+        Write-Host "[*] Chainsaw found at: $dir"
         "[OK] Extraction complete" | Out-File $summaryLog -Append
+        "[*] Chainsaw location: $dir" | Out-File $summaryLog -Append
     } else {
         throw "chainsaw.exe not found after extraction"
     }
