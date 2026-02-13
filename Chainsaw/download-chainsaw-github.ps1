@@ -71,6 +71,7 @@ try {
         # Update $dir to point to the actual location of chainsaw.exe
         $dir = $chainsawExe.DirectoryName
         $logsDir = "$dir\logs"
+        $wevCopyDir = "$dir\WEV_COPY"
         Write-Host "[OK] Extraction complete"
         Write-Host "[*] Chainsaw found at: $dir"
         "[OK] Extraction complete" | Out-File $summaryLog -Append
@@ -129,6 +130,32 @@ try {
     Write-Host $warnMsg
 }
 
+# Create WEV_COPY directory
+Write-Host "[*] Creating WEV_COPY directory..."
+try {
+    # Check if WEV_COPY directory exists
+    if (-not (Test-Path $wevCopyDir)) {
+        New-Item -Path $wevCopyDir -ItemType Directory -Force | Out-Null
+        Write-Host "[OK] Created WEV_COPY directory"
+        
+        # Validate directory was created
+        if (Test-Path $wevCopyDir) {
+            Write-Host "[OK] Validated WEV_COPY directory exists: $wevCopyDir"
+            "[OK] WEV_COPY directory created and validated" | Out-File $summaryLog -Append
+        } else {
+            throw "WEV_COPY directory validation failed"
+        }
+    } else {
+        Write-Host "[OK] WEV_COPY directory already exists"
+        "[OK] WEV_COPY directory already exists" | Out-File $summaryLog -Append
+    }
+} catch {
+    $warnMsg = "[!] Warning: Could not create WEV_COPY directory: $($_.Exception.Message)"
+    Write-Host $warnMsg
+    $warnMsg | Out-File $summaryLog -Append
+}
+"" | Out-File $summaryLog -Append
+
 # Generate summary
 "[*] Installation Complete" | Out-File $summaryLog -Append
 "" | Out-File $summaryLog -Append
@@ -136,6 +163,7 @@ try {
 "    - Chainsaw executable: $dir\$csVersion" | Out-File $summaryLog -Append
 "    - Chainsaw directory: $dir" | Out-File $summaryLog -Append
 "    - Logs directory: $logsDir" | Out-File $summaryLog -Append
+"    - WEV_COPY directory: $wevCopyDir" | Out-File $summaryLog -Append
 "    - Summary log: $summaryLog" | Out-File $summaryLog -Append
 "    - Zip file: Automatically removed" | Out-File $summaryLog -Append
 "" | Out-File $summaryLog -Append
