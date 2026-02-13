@@ -114,16 +114,42 @@ try {
     exit 1
 }
 
-# Generate summary
+# File Cleanup
+Write-Host "[*] Cleaning up temporary files..."
+try {
+    if (Test-Path $zip) {
+        Remove-Item $zip -Force -ErrorAction Stop
+        if (-not (Test-Path $zip)) {
+            Write-Host "[OK] Zip file removed"
+            "[OK] Zip file removed" | Out-File $summaryLog -Append
+        }
+    } else {
+        Write-Host "[OK] Zip file already removed"
+        "[OK] Zip file already removed" | Out-File $summaryLog -Append
+    }
+} catch {
+    $warnMsg = "[!] Warning: Could not remove zip file: $($_.Exception.Message)"
+    Write-Host $warnMsg
+    $warnMsg | Out-File $summaryLog -Append
+}
 "" | Out-File $summaryLog -Append
+
+# Generate summary
 "[*] File Locations:" | Out-File $summaryLog -Append
 "    - Chainsaw: $dir\chainsaw.exe" | Out-File $summaryLog -Append
 "    - Results: $logFile" | Out-File $summaryLog -Append
 "    - Summary: $summaryLog" | Out-File $summaryLog -Append
+"    - Zip file: Automatically removed" | Out-File $summaryLog -Append
 "" | Out-File $summaryLog -Append
-"[*] Next Steps:" | Out-File $summaryLog -Append
-"    - View results: Get-Content $logFile" | Out-File $summaryLog -Append
-"    - Cleanup: Remove-Item $dir -Recurse -Force" | 
+"[*] Manual Cleanup Required:" | Out-File $summaryLog -Append
+"    - Chainsaw directory: Remove-Item '$dir' -Recurse -Force" | 
+    Out-File $summaryLog -Append
+"    - Results files: Remove-Item '$logFile','$summaryLog' -Force" | 
+    Out-File $summaryLog -Append
+"" | Out-File $summaryLog -Append
+"[*] Quick Actions:" | Out-File $summaryLog -Append
+"    - View results: Get-Content '$logFile'" | Out-File $summaryLog -Append
+"    - View summary: Get-Content '$summaryLog'" | 
     Out-File $summaryLog -Append
 "" | Out-File $summaryLog -Append
 
