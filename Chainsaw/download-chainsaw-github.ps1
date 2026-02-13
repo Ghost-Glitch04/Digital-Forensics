@@ -11,7 +11,7 @@
 #>
 
 # Define Variables
-$url = "https://github.com/WithSecureLabs/chainsaw/releases/download/v2.13.1/chainsaw_x86_64-pc-windows-msvc.zip"
+$url = "https://github.com/WithSecureLabs/chainsaw/releases/download/v2.13.1/chainsaw_all_platforms+rules+examples.zip"
 $zip = "$env:TEMP\chainsaw.zip"
 $dir = "$env:TEMP\chainsaw"
 $logFile = "$env:TEMP\chainsaw_hunt_results.csv"
