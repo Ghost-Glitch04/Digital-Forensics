@@ -16,6 +16,7 @@ $zip = "$env:TEMP\chainsaw.zip"
 $dir = "$env:TEMP\chainsaw"
 $logFile = "$env:TEMP\chainsaw_hunt_results.csv"
 $summaryLog = "$env:TEMP\chainsaw_summary.txt"
+$csVersion = "chainsaw_x86_64-pc-windows-msvc.exe"
 
 # Initialize summary log
 "[*] Chainsaw Analysis - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | 
@@ -64,7 +65,7 @@ try {
     Expand-Archive -Path $zip -DestinationPath $dir -Force
     
     # Search for chainsaw.exe (handles nested directories)
-    $chainsawExe = Get-ChildItem -Path $dir -Filter "chainsaw.exe" `
+    $chainsawExe = Get-ChildItem -Path $dir -Filter $csVersion `
         -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     
     if ($chainsawExe) {
