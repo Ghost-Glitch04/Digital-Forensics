@@ -70,6 +70,7 @@ try {
     if ($chainsawExe) {
         # Update $dir to point to the actual location of chainsaw.exe
         $dir = $chainsawExe.DirectoryName
+        $logsDir = "$dir\logs"
         Write-Host "[OK] Extraction complete"
         Write-Host "[*] Chainsaw found at: $dir"
         "[OK] Extraction complete" | Out-File $summaryLog -Append
@@ -105,13 +106,37 @@ try {
 }
 "" | Out-File $summaryLog -Append
 
+# Organize log files
+Write-Host "[*] Organizing log files..."
+try {
+    # Check if logs directory exists, create if not
+    if (-not (Test-Path $logsDir)) {
+        New-Item -Path $logsDir -ItemType Directory -Force | Out-Null
+        Write-Host "[OK] Created logs directory: $logsDir"
+    } else {
+        Write-Host "[OK] Logs directory already exists"
+    }
+    
+    # Move summary log to logs directory
+    $newSummaryPath = "$logsDir\chainsaw_summary.txt"
+    if (Test-Path $summaryLog) {
+        Move-Item -Path $summaryLog -Destination $newSummaryPath -Force
+        $summaryLog = $newSummaryPath
+        Write-Host "[OK] Log files moved to: $logsDir"
+    }
+} catch {
+    $warnMsg = "[!] Warning: Could not organize logs: $($_.Exception.Message)"
+    Write-Host $warnMsg
+}
+
 # Generate summary
 "[*] Installation Complete" | Out-File $summaryLog -Append
 "" | Out-File $summaryLog -Append
 "[*] File Locations:" | Out-File $summaryLog -Append
 "    - Chainsaw executable: $dir\$csVersion" | Out-File $summaryLog -Append
 "    - Chainsaw directory: $dir" | Out-File $summaryLog -Append
-"    - Summary: $summaryLog" | Out-File $summaryLog -Append
+"    - Logs directory: $logsDir" | Out-File $summaryLog -Append
+"    - Summary log: $summaryLog" | Out-File $summaryLog -Append
 "    - Zip file: Automatically removed" | Out-File $summaryLog -Append
 "" | Out-File $summaryLog -Append
 "[*] Usage Example:" | Out-File $summaryLog -Append
@@ -120,8 +145,6 @@ try {
 "" | Out-File $summaryLog -Append
 "[*] Manual Cleanup:" | Out-File $summaryLog -Append
 "    Remove-Item '$dir' -Recurse -Force" | 
-    Out-File $summaryLog -Append
-"    Remove-Item '$summaryLog' -Force" | 
     Out-File $summaryLog -Append
 "" | Out-File $summaryLog -Append
 
