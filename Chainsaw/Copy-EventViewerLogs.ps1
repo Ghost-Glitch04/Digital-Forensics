@@ -38,6 +38,14 @@ $failCount = 0
 $skippedCount = 0
 $totalSize = 0
 
+# Display startup banner
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  Event Log Copy Utility" -ForegroundColor Cyan
+Write-Host "  Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+
 # Initialize summary log
 "[*] Event Log Copy Operation - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | 
     Out-File $summaryLog -Force
@@ -49,37 +57,39 @@ $totalSize = 0
 
 # Reusable Function: Validate Directory
 function Test-DirectoryAccess {
-    param([string]$Path, [string]$Description)
+    param(
+        [string]$Path,
+        [string]$Description
+    )
     
     Write-Host "[*] Validating $Description..."
     
     if (-not (Test-Path $Path)) {
         Write-Host "[!] $Description does not exist: $Path" -ForegroundColor Red
-        "[!] $Description not found: $Path" | Out-File $summaryLog -Append
         return $false
     }
     
     try {
         $null = Get-ChildItem $Path -ErrorAction Stop
         Write-Host "[OK] $Description accessible"
-        "[OK] $Description validated" | Out-File $summaryLog -Append
         return $true
     } catch {
-        Write-Host "[!] Cannot access $Description : $($_.Exception.Message)" -ForegroundColor Red
-        "[!] Access denied: $Description" | Out-File $summaryLog -Append
+        Write-Host "[!] Cannot access $($Description): $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
 
 # Reusable Function: Create Directory with Validation
 function New-DirectoryWithValidation {
-    param([string]$Path, [string]$Description)
+    param(
+        [string]$Path,
+        [string]$Description
+    )
     
-    Write-Host "[*] Checking $Description..."
+    Write-Host "[*] Checking $($Description)..."
     
     if (Test-Path $Path) {
-        Write-Host "[OK] $Description already exists"
-        "[OK] $Description found" | Out-File $summaryLog -Append
+        Write-Host "[OK] $($Description) already exists"
         return $true
     }
     
@@ -87,15 +97,13 @@ function New-DirectoryWithValidation {
         New-Item -Path $Path -ItemType Directory -Force -ErrorAction Stop | Out-Null
         
         if (Test-Path $Path) {
-            Write-Host "[OK] Created $Description"
-            "[OK] Created $Description : $Path" | Out-File $summaryLog -Append
+            Write-Host "[OK] Created $($Description)"
             return $true
         } else {
             throw "Directory creation validation failed"
         }
     } catch {
-        Write-Host "[!] Failed to create $Description : $($_.Exception.Message)" -ForegroundColor Red
-        "[!] Failed to create $Description" | Out-File $summaryLog -Append
+        Write-Host "[!] Failed to create $($Description): $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
@@ -105,6 +113,7 @@ function Copy-FileWithRetry {
     param(
         [string]$Source,
         [string]$Destination,
+        [string]$LogFile,
         [int]$MaxRetries = 3
     )
     
@@ -136,6 +145,8 @@ function Copy-FileWithRetry {
         } catch {
             if ($attempt -lt $MaxRetries) {
                 Write-Host " [RETRY $attempt/$MaxRetries]" -ForegroundColor Yellow
+                "    [RETRY] $fileName - Attempt $attempt of $MaxRetries" | 
+                    Out-File $LogFile -Append
                 Start-Sleep -Seconds 2
             } else {
                 Write-Host " [FAIL]" -ForegroundColor Red
@@ -144,25 +155,33 @@ function Copy-FileWithRetry {
             }
         }
     }
+    
+    # If we exit the loop without returning, all retries failed
+    return @{Status="FAIL"; Error="All retry attempts exhausted"}
 }
 
 # Validate source directory
+Write-Host "[*] Validating directories..." -ForegroundColor Cyan
 "" | Out-File $summaryLog -Append
 if (-not (Test-DirectoryAccess -Path $sourceDir -Description "Source directory")) {
     Write-Host "[!] Cannot proceed without access to source directory" -ForegroundColor Red
     "[!] Operation aborted - Source directory inaccessible" | Out-File $summaryLog -Append
+    Write-Host ""
     Get-Content $summaryLog
     exit 1
 }
+"[OK] Source directory validated" | Out-File $summaryLog -Append
 
 # Create target directory
 "" | Out-File $summaryLog -Append
 if (-not (New-DirectoryWithValidation -Path $targetDir -Description "Target directory")) {
     Write-Host "[!] Cannot proceed without target directory" -ForegroundColor Red
     "[!] Operation aborted - Cannot create target directory" | Out-File $summaryLog -Append
+    Write-Host ""
     Get-Content $summaryLog
     exit 1
 }
+"[OK] Target directory ready: $targetDir" | Out-File $summaryLog -Append
 
 # Copy event logs
 Write-Host ""
@@ -172,7 +191,7 @@ Write-Host "[*] Copying event log files..." -ForegroundColor Cyan
 
 foreach ($logFile in $logsToCopy) {
     $sourcePath = Join-Path $sourceDir $logFile
-    $result = Copy-FileWithRetry -Source $sourcePath -Destination $targetDir
+    $result = Copy-FileWithRetry -Source $sourcePath -Destination $targetDir -LogFile $summaryLog
     
     if ($result -is [hashtable]) {
         if ($result.Status -eq "SUCCESS") {
@@ -190,14 +209,21 @@ foreach ($logFile in $logsToCopy) {
 }
 
 # Move summary log to logs directory if it exists
+Write-Host ""
+Write-Host "[*] Finalizing summary log..."
 if (Test-Path $logDir) {
     try {
         $newSummaryPath = "$logDir\evtx_copy_summary_$timestamp.txt"
         Move-Item -Path $summaryLog -Destination $newSummaryPath -Force -ErrorAction Stop
+        $oldPath = $summaryLog
         $summaryLog = $newSummaryPath
+        Write-Host "[OK] Summary log moved to logs directory"
     } catch {
-        # Keep summary in TEMP if move fails
+        Write-Host "[!] Could not move log to logs directory: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "[*] Summary log remains at: $summaryLog" -ForegroundColor Yellow
     }
+} else {
+    Write-Host "[*] Logs directory not found, summary log saved to: $summaryLog"
 }
 
 # Generate summary
@@ -208,6 +234,7 @@ if (Test-Path $logDir) {
 "    - Failed: $failCount" | Out-File $summaryLog -Append
 "    - Skipped (not found): $skippedCount" | Out-File $summaryLog -Append
 "    - Total size copied: $totalSize MB" | Out-File $summaryLog -Append
+"    - Completed: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | Out-File $summaryLog -Append
 "" | Out-File $summaryLog -Append
 "[*] File Locations:" | Out-File $summaryLog -Append
 "    - Copied logs: $targetDir" | Out-File $summaryLog -Append
@@ -217,14 +244,16 @@ if (Test-Path $logDir) {
 if ($failCount -gt 0) {
     "[!] WARNING: Some files failed to copy. Review errors above." | 
         Out-File $summaryLog -Append
+    "" | Out-File $summaryLog -Append
 }
 
 # Display summary
 Write-Host ""
-Write-Host "[*] Copy Operation Summary:" -ForegroundColor Cyan
-Write-Host "============================================" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  Copy Operation Complete" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
 Get-Content $summaryLog | Select-Object -Skip 6
-Write-Host "============================================" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
 if ($failCount -eq 0 -and $successCount -gt 0) {
@@ -236,3 +265,4 @@ if ($failCount -eq 0 -and $successCount -gt 0) {
 } else {
     Write-Host "[!] Copy operation failed - No files copied" -ForegroundColor Red
 }
+Write-Host ""
