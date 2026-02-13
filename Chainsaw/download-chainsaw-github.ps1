@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Downloads and runs Chainsaw for Windows Event Log forensic analysis
+    Downloads and installs Chainsaw for Windows Event Log forensic analysis
 .DESCRIPTION
     Compatible with SentinelOne Remote Shell (Powershell 5.1)
-    Downloads Chainsaw, performs hunt analysis, and outputs results
+    Downloads Chainsaw, extracts files, and performs cleanup
 .NOTES
     Author: Ghost-Glitch04
     Version: 1.0
@@ -14,12 +14,11 @@
 $url = "https://github.com/WithSecureLabs/chainsaw/releases/download/v2.13.1/chainsaw_all_platforms+rules+examples.zip"
 $zip = "$env:TEMP\chainsaw.zip"
 $dir = "$env:TEMP\chainsaw"
-$logFile = "$env:TEMP\chainsaw_hunt_results.csv"
 $summaryLog = "$env:TEMP\chainsaw_summary.txt"
 $csVersion = "chainsaw_x86_64-pc-windows-msvc.exe"
 
 # Initialize summary log
-"[*] Chainsaw Analysis - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | 
+"[*] Chainsaw Installation - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | 
     Out-File $summaryLog -Force
 "[*] Host: $env:COMPUTERNAME" | Out-File $summaryLog -Append
 "[*] User: $env:USERNAME" | Out-File $summaryLog -Append
@@ -107,29 +106,28 @@ try {
 "" | Out-File $summaryLog -Append
 
 # Generate summary
+"[*] Installation Complete" | Out-File $summaryLog -Append
+"" | Out-File $summaryLog -Append
 "[*] File Locations:" | Out-File $summaryLog -Append
-"    - Chainsaw: $dir\chainsaw.exe" | Out-File $summaryLog -Append
-"    - Results: $logFile" | Out-File $summaryLog -Append
+"    - Chainsaw executable: $dir\$csVersion" | Out-File $summaryLog -Append
+"    - Chainsaw directory: $dir" | Out-File $summaryLog -Append
 "    - Summary: $summaryLog" | Out-File $summaryLog -Append
 "    - Zip file: Automatically removed" | Out-File $summaryLog -Append
 "" | Out-File $summaryLog -Append
-"[*] Manual Cleanup Required:" | Out-File $summaryLog -Append
-"    - Chainsaw directory: Remove-Item '$dir' -Recurse -Force" | 
-    Out-File $summaryLog -Append
-"    - Results files: Remove-Item '$logFile','$summaryLog' -Force" | 
+"[*] Usage Example:" | Out-File $summaryLog -Append
+"    & '$dir\$csVersion' hunt C:\Windows\System32\winevt\Logs --output results.csv" | 
     Out-File $summaryLog -Append
 "" | Out-File $summaryLog -Append
-"[*] Quick Actions:" | Out-File $summaryLog -Append
-"    - View results: Get-Content '$logFile'" | Out-File $summaryLog -Append
-"    - View summary: Get-Content '$summaryLog'" | 
+"[*] Manual Cleanup:" | Out-File $summaryLog -Append
+"    Remove-Item '$dir' -Recurse -Force" | 
+    Out-File $summaryLog -Append
+"    Remove-Item '$summaryLog' -Force" | 
     Out-File $summaryLog -Append
 "" | Out-File $summaryLog -Append
 
 # Display summary
 Write-Host ""
-Write-Host "[*] Analysis Summary:"
+Write-Host "[*] Installation Summary:"
 Get-Content $summaryLog
-
 Write-Host ""
-Write-Host "[*] First 20 lines of results:"
-Get-Content $logFile -TotalCount 20
+Write-Host "[OK] Chainsaw is ready to use at: $dir\$csVersion"
