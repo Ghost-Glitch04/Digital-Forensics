@@ -14,7 +14,7 @@
 $url = "https://github.com/WithSecureLabs/chainsaw/releases/download/v2.13.1/chainsaw_all_platforms+rules+examples.zip"
 $zip = "$env:TEMP\chainsaw.zip"
 $dir = "$env:TEMP\chainsaw"
-$summaryLog = "$env:TEMP\chainsaw_summary.txt"
+$summaryLog = "$env:TEMP\chainsaw_installation_summary.txt"
 $csVersion = "chainsaw_x86_64-pc-windows-msvc.exe"
 
 # Initialize summary log
