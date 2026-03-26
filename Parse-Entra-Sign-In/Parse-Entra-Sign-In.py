@@ -13,15 +13,108 @@ Export the CSV from:
 
 Usage:
   python Parse-Entra-Sign-In.py -f SignIns.csv
-  python Parse-Entra-Sign-In.py -f SignIns.csv --summary
-  python Parse-Entra-Sign-In.py -f SignIns.csv --anomalies
-  python Parse-Entra-Sign-In.py -f SignIns.csv --all
-  python Parse-Entra-Sign-In.py -f SignIns.csv --user jdoe@corp.com
-  python Parse-Entra-Sign-In.py -f SignIns.csv --ip 1.2.3.4
-  python Parse-Entra-Sign-In.py -f SignIns.csv --failures-only
-  python Parse-Entra-Sign-In.py -f SignIns.csv --risky --sort risk --export suspicious.csv
-  python Parse-Entra-Sign-In.py -f SignIns.csv --legacy-only
-  python Parse-Entra-Sign-In.py -f SignIns.csv --brute-force-threshold 3 --anomalies
+      # Minimum required flag. Loads the CSV and prints the event table.
+
+  ── ACTIONS ──────────────────────────────────────────────────────────────────
+
+  --summary
+      Print a statistical overview: top users, source IPs, applications,
+      locations, client apps, status breakdown, and risk level counts.
+
+  --anomalies
+      Run automated anomaly detection across all records:
+        · Brute-force / password spray (configurable threshold)
+        · Impossible travel (location change < 1 hour for same account)
+        · Failure → Success pattern (possible account compromise)
+        · MFA denied / blocked events (MFA fatigue indicator)
+
+  --all
+      Run --summary + --anomalies + event table in a single pass.
+      Recommended starting point for a full triage.
+
+  --table
+      Explicitly print the event table. This is the default action
+      if no other action flag is provided.
+
+  --max-rows N
+      Limit the event table to N rows (default: 200).
+      Records beyond the limit are noted but not printed.
+      Use --export to capture the full dataset.
+
+  --sort {date|risk|user|ip|status}
+      Sort the event table by the specified column (default: date).
+      Use --sort risk to surface the highest-scoring records first.
+
+  --export PATH
+      Write all filtered records to a CSV file at PATH.
+      Includes risk score, risk label, and risk reasons columns.
+
+  --export-unique-ips PATH
+      Same as --export but deduplicates by IP address first.
+      Where an IP appears in multiple records, only the highest-risk
+      record is kept. Useful for feeding a unique IP list into a
+      threat intel platform or firewall blocklist.
+
+  --brute-force-threshold N
+      Number of failures required to flag an account as a brute-force
+      candidate during --anomalies (default: 5). Lower this in targeted
+      attack scenarios where the attacker is being slow/deliberate.
+
+  ── FILTERS ──────────────────────────────────────────────────────────────────
+
+  --user UPN
+      Show only records matching a UPN or display name (partial match).
+      Example: --user jdoe  or  --user jdoe@corp.com
+
+  --ip IP
+      Show only records matching a source IP address (partial match).
+      Useful for pivoting on a suspicious IP identified elsewhere.
+
+  --app APP
+      Show only records for a specific application name (partial match).
+      Example: --app "Exchange Online"
+
+  --location LOCATION
+      Show only records whose location field contains the given string.
+      Example: --location "China"  or  --location "Delhi"
+
+  --start YYYY-MM-DD
+      Exclude records before this date (UTC). Useful for scoping to
+      an incident window.
+
+  --end YYYY-MM-DD
+      Exclude records after this date (UTC).
+
+  --failures-only
+      Show failed sign-ins only. Strips all Success/Interrupted events.
+
+  --success-only
+      Show successful sign-ins only. Use with --anomalies to find
+      compromised accounts that are now logging in successfully.
+
+  --risky
+      Show only records at or above the risk score threshold.
+      Combine with --sort risk and --export for a suspicious-activity report.
+
+  --risky-threshold SCORE
+      Set the minimum risk score when using --risky (default: 30).
+      30 = MEDIUM and above.  60 = HIGH only.
+
+  --legacy-only
+      Show only events using legacy / basic auth clients (IMAP, POP, SMTP,
+      MAPI, EAS, etc.). These protocols bypass MFA and are a common
+      attack vector even in MFA-protected tenants.
+
+  --no-mfa
+      Show only events where MFA was not performed, regardless of whether
+      it was required. Helps identify gaps in MFA enforcement.
+
+  --filter-remove-legitimate
+      Remove records that match known-legitimate traffic baselines:
+        · Location contains "Ohio"
+        · Autonomous System Number matches a known-good ASN
+      Use this to reduce noise when the environment is known and
+      you want to focus on anomalous external traffic only.
 """
 
 import argparse
@@ -94,6 +187,16 @@ COLUMN_MAP = {
     "flagged for review":                   "flagged",
     "token issuer type":                    "token_issuer",
 
+    # Network / ASN
+    "autonomous system number": "asn",
+    "as number":                "asn",
+    "asn":                      "asn",
+
+    # User agent
+    "user agent":               "user_agent",
+    "useragent":                "user_agent",
+    "user-agent":               "user_agent",
+
     # Misc
     "latency (ms)":             "latency",
     "correlation id":           "correlation_id",
@@ -118,6 +221,65 @@ LEGACY_AUTH_CLIENTS = {
     "older office clients",
     "exchange web services",
 }
+
+# ============================================================================
+# Legitimate traffic baselines — used by --filter-remove-legitimate
+# ============================================================================
+
+# User agent strings that are exclusively seen in malicious/automated sign-ins
+MALICIOUS_USER_AGENTS = {
+    "bav2ropc",  # OAuth ROPC (Resource Owner Password Credential) abuse — legacy brute-force tool
+    "axios",     # Node.js HTTP client — used in credential stuffing and token spray tooling
+}
+
+
+LEGITIMATE_ASNS = {
+    "797",
+    "3356",
+    "5650",
+    "6167",
+    "6389",
+    "7018",
+    "7155",
+    "7843",
+    "7922",
+    "8075",
+    "10796",
+    "10967",
+    "13150",
+    "13335",
+    "14593",
+    "14654",
+    "15081",
+    "15108",
+    "16504",
+    "16509",
+    "20057",
+    "20940",
+    "21789",
+    "21928",
+    "22616",
+    "22773",
+    "22843",
+    "25645",
+    "26375",
+    "27632",
+    "30036",
+    "32806",
+    "36183",
+    "40306",
+    "46475",
+    "46887",
+    "47046",
+    "54113",
+    "398378",
+    "400110",
+}
+
+LEGITIMATE_LOCATION_KEYWORDS = {
+    "ohio",
+}
+
 
 # High-risk error codes and what they mean
 HIGH_RISK_ERROR_CODES = {
@@ -216,6 +378,22 @@ def score_record(rec: dict) -> tuple[int, list[str]]:
             score += 20
             reasons.append(f"Error {code}: {label}")
             break
+
+    # Malicious user agent strings
+    user_agent = rec.get("user_agent", "").lower()
+    for ua in MALICIOUS_USER_AGENTS:
+        if ua in user_agent:
+            score += 60
+            reasons.append(f"Malicious user agent detected: {rec.get('user_agent')}")
+            break
+
+    # Geographic risk — sign-in outside North America
+    location = rec.get("location", "")
+    if location:
+        country_code = location.split(",")[-1].strip().upper()
+        if country_code and country_code not in ("US", "CA", "MX"):
+            score += 15
+            reasons.append(f"Sign-in outside North America: {location}")
 
     return min(score, 100), reasons
 
@@ -324,7 +502,7 @@ def detect_failure_then_success(records: list[dict], min_failures: int = 2) -> l
 # ============================================================================
 
 def normalize_header(h: str) -> str:
-    key = h.strip().lower()
+    key = " ".join(h.strip().lower().split())
     return COLUMN_MAP.get(key, key.replace(" ", "_").replace("-", "_"))
 
 
@@ -366,19 +544,20 @@ def load_csv(path: str) -> list[dict]:
 # ============================================================================
 
 def apply_filters(
-    records:         list[dict],
-    user:            Optional[str],
-    ip:              Optional[str],
-    app:             Optional[str],
-    location:        Optional[str],
-    failures_only:   bool,
-    success_only:    bool,
-    risky:           bool,
-    risky_threshold: int,
-    start_date:      Optional[datetime],
-    end_date:        Optional[datetime],
-    legacy_only:     bool,
-    no_mfa:          bool,
+    records:              list[dict],
+    user:                 Optional[str],
+    ip:                   Optional[str],
+    app:                  Optional[str],
+    location:             Optional[str],
+    failures_only:        bool,
+    success_only:         bool,
+    risky:                bool,
+    risky_threshold:      int,
+    start_date:           Optional[datetime],
+    end_date:             Optional[datetime],
+    legacy_only:          bool,
+    no_mfa:               bool,
+    filter_legitimate:    bool,
 ) -> list[dict]:
     out = []
     for r in records:
@@ -405,6 +584,13 @@ def apply_filters(
         if no_mfa:
             mfa = r.get("mfa_result", "").lower()
             if "not performed" not in mfa and mfa != "":
+                continue
+        if filter_legitimate:
+            loc = r.get("location", "").lower()
+            if any(kw in loc for kw in LEGITIMATE_LOCATION_KEYWORDS):
+                continue
+            asn = r.get("asn", "").strip()
+            if asn in LEGITIMATE_ASNS:
                 continue
         out.append(r)
     return out
@@ -634,7 +820,7 @@ def print_anomalies(records: list[dict], bf_threshold: int) -> None:
 # ============================================================================
 
 EXPORT_FIELDS = [
-    "date", "upn", "display_name", "ip", "location",
+    "date", "upn", "ip", "location", "asn",
     "app", "resource", "client_app",
     "status", "error_code", "failure_reason",
     "mfa_result", "mfa_method", "auth_requirement",
@@ -655,6 +841,24 @@ def export_csv(records: list[dict], path: str) -> None:
             row["_risk_reasons"] = "; ".join(r.get("_risk_reasons") or [])
             writer.writerow(row)
     print(f"\n{GREEN}  Exported {len(records)} records → {path}{RESET}")
+
+
+def dedupe_by_ip(records: list[dict]) -> list[dict]:
+    """
+    Return one record per unique IP address.
+    Where an IP appears multiple times, keep the record with the highest
+    risk score. Records with no IP are kept as-is.
+    """
+    seen: dict[str, dict] = {}
+    no_ip = []
+    for r in records:
+        ip = r.get("ip", "").strip()
+        if not ip:
+            no_ip.append(r)
+            continue
+        if ip not in seen or r.get("_risk_score", 0) > seen[ip].get("_risk_score", 0):
+            seen[ip] = r
+    return list(seen.values()) + no_ip
 
 
 # ============================================================================
@@ -681,10 +885,11 @@ def main() -> None:
     filt.add_argument("--failures-only",    action="store_true",    help="Show failed sign-ins only")
     filt.add_argument("--success-only",     action="store_true",    help="Show successful sign-ins only")
     filt.add_argument("--risky",            action="store_true",    help="Show records above risk threshold")
-    filt.add_argument("--risky-threshold",  type=int, default=30,   metavar="SCORE",
-                      help="Risk score threshold when using --risky (default: 30)")
+    filt.add_argument("--risky-threshold",  type=int, default=None,  metavar="SCORE",
+                      help="Risk score threshold — implies --risky (default: 30)")
     filt.add_argument("--legacy-only",      action="store_true",    help="Show legacy/basic auth events only")
-    filt.add_argument("--no-mfa",           action="store_true",    help="Show events where MFA was not performed")
+    filt.add_argument("--no-mfa",                  action="store_true",  help="Show events where MFA was not performed")
+    filt.add_argument("--filter-remove-legitimate", action="store_true",  help="Remove known-legitimate traffic (Ohio locations, known-good ASNs)")
 
     # ── Actions ───────────────────────────────────────────────────────────
     act = parser.add_argument_group("Actions")
@@ -699,7 +904,8 @@ def main() -> None:
                      help="Table sort order (default: date)")
     act.add_argument("--brute-force-threshold", type=int, default=5, metavar="N",
                      help="Failure count to flag brute force (default: 5)")
-    act.add_argument("--export", metavar="PATH", help="Export filtered results to CSV")
+    act.add_argument("--export",            metavar="PATH", help="Export filtered results to CSV")
+    act.add_argument("--export-unique-ips", metavar="PATH", help="Export one record per unique IP (highest-risk kept) to CSV")
 
     args = parser.parse_args()
 
@@ -727,21 +933,26 @@ def main() -> None:
     start_dt = parse_date(args.start) if args.start else None
     end_dt   = parse_date(args.end)   if args.end   else None
 
+    # ── Resolve risky filter — --risky-threshold alone implies --risky ────
+    risky_threshold = args.risky_threshold if args.risky_threshold is not None else 30
+    risky           = args.risky or args.risky_threshold is not None
+
     # ── Apply filters ──────────────────────────────────────────────────────
     filtered = apply_filters(
         records,
-        user            = args.user,
-        ip              = args.ip,
-        app             = args.app,
-        location        = args.location,
-        failures_only   = args.failures_only,
-        success_only    = args.success_only,
-        risky           = args.risky,
-        risky_threshold = args.risky_threshold,
-        start_date      = start_dt,
-        end_date        = end_dt,
-        legacy_only     = args.legacy_only,
-        no_mfa          = args.no_mfa,
+        user                 = args.user,
+        ip                   = args.ip,
+        app                  = args.app,
+        location             = args.location,
+        failures_only        = args.failures_only,
+        success_only         = args.success_only,
+        risky                = risky,
+        risky_threshold      = risky_threshold,
+        start_date           = start_dt,
+        end_date             = end_dt,
+        legacy_only          = args.legacy_only,
+        no_mfa               = args.no_mfa,
+        filter_legitimate    = args.filter_remove_legitimate,
     )
 
     print(f"{CYAN}Matched: {len(filtered)} / {len(records)} records{RESET}")
@@ -761,7 +972,7 @@ def main() -> None:
     run_summary = args.summary  or run_all
     run_anomaly = args.anomalies or run_all
     run_table   = args.table    or run_all or not any([
-        args.summary, args.anomalies, args.export
+        args.summary, args.anomalies, args.export, args.export_unique_ips
     ])
 
     if run_summary:
@@ -776,6 +987,11 @@ def main() -> None:
 
     if args.export:
         export_csv(filtered, args.export)
+
+    if args.export_unique_ips:
+        unique = dedupe_by_ip(filtered)
+        export_csv(unique, args.export_unique_ips)
+        print(f"{CYAN}  Unique IPs: {len(unique)} records ({len(filtered) - len(unique)} duplicates removed){RESET}")
 
     # ── Risk tally footer ─────────────────────────────────────────────────
     highs = sum(1 for r in filtered if r.get("_risk_label") == "HIGH")
