@@ -67,7 +67,7 @@ Usage:
       ASNs below the threshold keep their precise Cymru-announced CIDR(s) but are
       not expanded to the full ASN prefix list.
       Use 1 to expand every ASN regardless of hit count.
-      Raise to 5–10 to focus expansion only on the highest-volume attackers.
+      Raise to 5-10 to focus expansion only on the highest-volume attackers.
 
   ── FILTERING (automatic) ────────────────────────────────────────────────────
 
