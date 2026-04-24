@@ -5,7 +5,7 @@ EDR false-positive triage. Detects macros, embedded objects, template
 injection, Equation Editor exploits, XLM macros, and encrypted packages
 — without ever modifying the source file.
 
-**Version:** 2.0.1
+**Version:** 2.1.0
 **Author:** Ghost-Glitch04
 **License:** (TBD — will be set at public-release time)
 
@@ -45,6 +45,7 @@ round-trip and emitted to the log on every run.
 - **XLM / Excel 4.0 macros** (Auto_Open, Macro1, veryHidden indicators)
 - **Encrypted packages** (EncryptedPackage / EncryptionInfo stream names — flags silent-CLEAN false negatives)
 - **Suspicious keyword LOLBin list** (PowerShell, mshta, regsvr32, certutil, bitsadmin, CreateObject, Shell.Application, etc.)
+- **External URLs** — full URL is captured and included in finding Detail. Known-benign XML namespace URIs (schemas.microsoft.com, openxmlformats.org, w3.org, etc.) report as INFO; all other URLs report as SUSPICIOUS with the URL itself visible, so the analyst doesn't need a separate extraction step.
 - **Extension spoofing** (magic bytes don't match declared extension)
 
 ### What it does NOT do
@@ -92,10 +93,10 @@ Unblock-File -LiteralPath .\Invoke-OfficeDocAnalysis.ps1
 
 ### 3. Verify script integrity
 
-The published SHA-256 for **v2.0.1** is:
+The published SHA-256 for **v2.1.0** is:
 
 ```
-C3A5336E1533489209D8198F4D294CED02B7BFE1A891580D9A30DBEB33C6CA99
+B9316CFC078AD3286FF2C847115857E61BFD2676FD27C57F9CCFEEA8BDC70C53
 ```
 
 Verify locally:

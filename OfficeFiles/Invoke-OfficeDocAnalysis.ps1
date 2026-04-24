@@ -70,10 +70,19 @@
 
 .NOTES
     Author  : Ghost-Glitch04
-    Version : 2.0.1
+    Version : 2.1.0
     Date    : 2026-04-24
 
     Changelog:
+      2.1.0 - URL-finding signal improvement. CFBF and OOXML URL
+              detectors now extract the full URL (not just the scheme
+              prefix) and classify against a known-benign-namespace
+              pattern list (schemas.microsoft.com, openxmlformats.org,
+              w3.org, etc.). XML namespace URIs report as INFO; only
+              externally-targeted URLs report as SUSPICIOUS, with the
+              URL itself in the finding Detail. Eliminates the
+              false-positive class observed on benign Office docs that
+              embed standard drawingml/relationship namespace URIs.
       2.0.1 - ASCII-hardened source (removed all non-ASCII characters
               from comments and log strings). Script is now parse-safe
               on PowerShell 5.1 even when copies lose the UTF-8 BOM.
@@ -140,7 +149,7 @@ $ErrorActionPreference = 'Stop'
 # ============================================================
 # CONFIGURATION
 # ============================================================
-$Script:Version       = '2.0.1'
+$Script:Version       = '2.1.0'
 $Script:ScriptName    = 'Invoke-OfficeDocAnalysis'
 $Script:LogFile       = $null   # set in Main bootstrap
 $Script:WorkingDir    = $null   # set by New-Workspace unit
@@ -170,9 +179,27 @@ $Script:SuspiciousKeywords = @(
     'WScript.Shell','InternetExplorer.Application'
 )
 
-# URL scheme patterns - scanned with attribute context for OOXML (Target=,
-# src=) and plainly for CFBF/RTF (where structural context is absent).
-$Script:UrlSchemes = @('http://','https://','ftp://','file://')
+# URL extraction regex - captures full URLs (scheme + host + path + query)
+# so findings can report WHICH url was detected, not just that some URL
+# scheme string appeared in binary content. Covers http, https, ftp, file.
+$Script:UrlRegex = '(?:https?|ftp|file)://[A-Za-z0-9\._\-/~\?&=\+%#:,;@!\$\*\(\)]+'
+
+# Benign-URL patterns - XML namespace URIs and other standard scheme URLs
+# that appear in virtually every legitimate Office document. URLs matching
+# any of these patterns are demoted from SUSPICIOUS to INFO. The list is
+# conservative: add only URL prefixes that have NO known threat-intel
+# overlap and appear in the structural skeleton of standard Office content.
+$Script:BenignUrlPatterns = @(
+    '^https?://schemas\.microsoft\.com/',
+    '^https?://schemas\.openxmlformats\.org/',
+    '^https?://schemas\.openxml\.org/',
+    '^https?://schemas\.xmlsoap\.org/',
+    '^https?://www\.w3\.org/',
+    '^https?://purl\.org/dc/',
+    '^https?://ns\.adobe\.com/',
+    '^https?://www\.iana\.org/',
+    '^https?://sdx\.microsoft\.com/'
+)
 
 $Script:SuspiciousExtensions = @('.exe','.dll','.ps1','.bat','.cmd','.scr','.vbs','.js','.hta','.msi')
 
@@ -441,6 +468,24 @@ function Find-BytePattern {
         $pos = $found + 1
     }
     return -1
+}
+
+#region ============================================================
+# HELPER: Test-UrlIsBenign
+# Purpose : Classify a URL as "known-benign XML namespace or schema"
+#           versus something that warrants SUSPICIOUS attention. Used
+#           by the URL-detection logic in both CFBF and OOXML paths to
+#           demote XML-namespace URIs out of the SUSPICIOUS bucket.
+# Inputs  : -Url (string)
+# Outputs : $true if matches any pattern in $Script:BenignUrlPatterns
+# Depends : $Script:BenignUrlPatterns
+#endregion ==========================================================
+function Test-UrlIsBenign {
+    param([Parameter(Mandatory)][string]$Url)
+    foreach ($pat in $Script:BenignUrlPatterns) {
+        if ($Url -match $pat) { return $true }
+    }
+    return $false
 }
 
 #region ============================================================
@@ -833,15 +878,20 @@ function Invoke-OOXMLAnalysis {
                     }
                 }
 
-                # URL schemes - only inside value attributes of .rels files
+                # URLs - only inside value attributes of .rels files
                 # (Target=, src=, Source=) or inside document.xml content nodes.
-                # xmlns= namespace declarations and schema URIs are excluded.
+                # xmlns= namespace declarations are excluded by the attribute
+                # gate. Captured URLs are classified via Test-UrlIsBenign:
+                # known XML namespace URIs become INFO, anything else stays
+                # SUSPICIOUS so the analyst sees the actual target.
                 if ($relPath -like '*.rels' -or $relPath -like '*word*\document.xml' -or $relPath -like '*xl*\sharedStrings.xml') {
-                    foreach ($scheme in $Script:UrlSchemes) {
-                        $urlPattern = '(?:Target|src|Source)\s*=\s*"([^"]*' + [regex]::Escape($scheme) + '[^"]*)"'
-                        $urlMatches = [regex]::Matches($content, $urlPattern)
-                        foreach ($m in $urlMatches) {
-                            Add-Finding 'SUSPICIOUS' 'ExternalUrl' "URL in attribute: $($m.Groups[1].Value)" $relPath
+                    $attrUrlPattern = '(?:Target|src|Source)\s*=\s*"([^"]*(?:https?|ftp|file)://[^"]+)"'
+                    foreach ($m in [regex]::Matches($content, $attrUrlPattern)) {
+                        $url = $m.Groups[1].Value
+                        if (Test-UrlIsBenign $url) {
+                            Add-Finding 'INFO' 'ExternalUrl' "Benign namespace URL in attribute: $url" $relPath
+                        } else {
+                            Add-Finding 'SUSPICIOUS' 'ExternalUrl' "URL in attribute: $url" $relPath
                         }
                     }
                 }
@@ -951,17 +1001,33 @@ function Invoke-CFBFAnalysis {
                 $hits++
             }
         }
-        # URL schemes inside CFBF binary content - VBA source strings often
-        # contain these. CFBF lacks the xmlns namespace noise problem that
-        # OOXML has, so direct substring match is reliable here.
-        foreach ($scheme in $Script:UrlSchemes) {
-            if ($Script:RawContent -match [regex]::Escape($scheme)) {
-                Add-Finding 'SUSPICIOUS' 'ExternalUrl' "URL scheme '$scheme' in binary content"
+        # URL extraction inside CFBF binary content. Captures full URLs
+        # (not just scheme prefix) and classifies known-benign XML namespace
+        # URIs as INFO so they don't drive a SUSPICIOUS verdict on benign
+        # docs. Genuinely-external URLs remain SUSPICIOUS and their target
+        # appears in the finding Detail so the analyst sees the URL without
+        # a separate extraction step.
+        $allUrlMatches = [regex]::Matches($Script:RawContent, $Script:UrlRegex)
+        # @() forces array context. Sort-Object -Unique unrolls to a scalar
+        # on a single match and returns $null on zero matches; .Count then
+        # throws under StrictMode. Array wrap produces 0/1/N consistently.
+        $uniqueUrls = @($allUrlMatches | ForEach-Object { $_.Value } | Sort-Object -Unique)
+        $susUrlCount = 0
+        $benignUrlCount = 0
+        foreach ($url in $uniqueUrls) {
+            if (Test-UrlIsBenign $url) {
+                Add-Finding 'INFO' 'ExternalUrl' "Benign XML namespace URI: $url"
+                $benignUrlCount++
+            } else {
+                Add-Finding 'SUSPICIOUS' 'ExternalUrl' "URL in binary content: $url"
+                $susUrlCount++
                 $hits++
             }
         }
+        Write-Log "URL extraction: $($uniqueUrls.Count) unique URL(s) | benign=$benignUrlCount | suspicious=$susUrlCount" 'DEBUG'
+
         if ($hits -gt 0) {
-            Write-Log "VERIFY_WARN: $hits suspicious keyword(s) matched - run olevba for full macro decode if verdict is not CLEAN" 'WARN'
+            Write-Log "VERIFY_WARN: $hits suspicious indicator(s) matched - run olevba for full macro decode if verdict is not CLEAN" 'WARN'
         } else {
             Write-Log 'VERIFY_OK: No plaintext suspicious keywords detected'
         }

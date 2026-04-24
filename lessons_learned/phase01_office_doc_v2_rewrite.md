@@ -445,6 +445,68 @@ depend on it alone for correctness.
 
 ---
 
+### 16. URL-finding signal improvement (v2.1.0) and the Sort-Object-Unique array-unroll trap
+
+Added 2026-04-24 after a user's live triage on a real front-desk business
+doc (ABN.doc, 47KB CFBF, 2016-vintage) returned SUSPICIOUS driven by a
+single `[ExternalUrl] URL scheme 'http://'` finding. Manual extraction
+revealed the URL was `http://schemas.openxmlformats.org/drawingml/2006/main`
+- a benign XML namespace URI that appears in virtually every Office doc
+containing a drawing or shape.
+
+The v2.0.x URL detection was doing half the job:
+- **CFBF path** checked only for scheme *substring* presence; didn't
+  extract the URL. Analyst had no idea what URL was found.
+- **OOXML path** extracted the URL into the finding Detail but didn't
+  classify benign namespace URIs separately, so any namespace URL in
+  Target/src attributes would still drive a SUSPICIOUS verdict.
+
+v2.1.0 closed both gaps:
+1. New `$Script:UrlRegex` captures full URLs (scheme + host + path) not
+   just scheme prefix
+2. New `$Script:BenignUrlPatterns` lists known XML namespace roots
+   (schemas.microsoft.com, openxmlformats.org, w3.org, etc.)
+3. New `Test-UrlIsBenign` helper pattern-matches a URL against the list
+4. Both CFBF and OOXML URL detectors now emit `INFO` severity for benign
+   namespace URIs and `SUSPICIOUS` severity for everything else - with
+   the actual URL in the finding Detail
+
+Effect on the user's case: VERDICT: SUSPICIOUS (1 suspicious + 1 info)
+-> VERDICT: CLEAN (2 info) with both findings visible in the report.
+Real IOCs (tested with `http://evil.example.com/payload.exe` in a
+synthetic fixture) still surface as SUSPICIOUS with the malicious URL
+in the finding Detail.
+
+**Bug caught during implementation:** `Sort-Object -Unique` unrolls its
+output to a scalar when there's exactly one result, and returns $null
+when there are zero results. Under `Set-StrictMode -Version Latest`,
+calling `.Count` on a string or $null throws "The property 'Count'
+cannot be found on this object." Fix: force array context with `@()`:
+
+```powershell
+# WRONG (fails on 0 or 1 matches under StrictMode):
+$uniqueUrls = $matches | ForEach-Object { $_.Value } | Sort-Object -Unique
+$uniqueUrls.Count   # throws on scalar/null
+
+# RIGHT (always an array, even for 0 or 1 element):
+$uniqueUrls = @($matches | ForEach-Object { $_.Value } | Sort-Object -Unique)
+$uniqueUrls.Count   # 0, 1, or N consistently
+```
+
+**Lesson:** Adding a new analysis unit or enhancing an existing one in
+a standards-compliant phased script is usually a config + helper +
+small-edit operation. The v2 architecture (helpers, Add-Finding, phase
+structure) meant this URL enhancement required zero structural changes
+- only a new config list, a new 7-line helper, and ~15 lines of logic
+replacement. Extensibility is not free; it's paid for by the upfront
+investment in small, composable primitives. Also: any PowerShell
+pipeline that ends in `Sort-Object -Unique` or `Select-Object -Unique`
+must be wrapped in `@()` when the downstream code uses `.Count` under
+`Set-StrictMode -Version Latest`. This pattern ate one verification
+cycle in this session.
+
+---
+
 ## Carry-Forward Items
 
 | CF-ID | Summary | Opened | Notes |

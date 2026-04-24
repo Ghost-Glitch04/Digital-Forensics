@@ -164,6 +164,43 @@ Next  : (completed - shipped as v2.0.1) Restricted script source to
         Performance unchanged. Script is now BOM-independent and
         safe against any distribution path.
 
+### [2026-04-24] Attempt 8 - URL capture + benign-namespace classification (v2.1.0)
+Tried : User ran v2.0.1 live against C:\Users\frontdesk\Desktop\FRONT DESK\ABN.doc
+        (47KB CFBF business form from 2016). Verdict: SUSPICIOUS driven
+        by a single [ExternalUrl] URL scheme 'http://' finding. Manual
+        URL extraction from the binary revealed the match was
+        http://schemas.openxmlformats.org/drawingml/2006/main - a
+        benign XML namespace URI. Script had no way to distinguish
+        benign namespace URIs from actual external IOCs.
+        The CFBF URL detector was only checking for the scheme substring
+        (http://), not capturing the full URL. OOXML detector captured
+        full URLs in Target/src attributes but didn't classify benign
+        vs suspicious.
+Result: SUCCESS after 1 regression cycle.
+Reason: Script architecture was already extensible (Add-Finding helper,
+        config-driven pattern lists, unit-timing structure). The fix was
+        purely additive: (1) new $Script:UrlRegex to capture full URLs,
+        (2) new $Script:BenignUrlPatterns allow-list of 9 XML namespace
+        roots, (3) new Test-UrlIsBenign helper (7 lines, no dependencies),
+        (4) ~15 lines of logic replacement in CFBF and OOXML URL blocks.
+        No structural changes; no new phase; no new unit.
+
+        One regression surfaced during verification: Sort-Object -Unique
+        unrolls to a scalar when there's exactly one unique match, and
+        returns $null on zero matches. Under Set-StrictMode -Version
+        Latest, calling .Count on the result throws "The property
+        'Count' cannot be found on this object." The MSI fixture (4
+        URLs, natural array) passed; synthetic fixtures with 0 or 1 URL
+        all failed Exit=20. Fix: @(...) array-wrap forcing 0/1/N
+        consistency. Post-fix 16/16 tests pass on both PS 5.1 and PS 7.
+Next  : (none - landed clean as v2.1.0) Effect on user's ABN.doc case:
+        VERDICT: SUSPICIOUS -> CLEAN with both findings now showing
+        the actual URL (benign namespace) and actual stream name
+        (WordDocument at offset 0xB580), both at INFO severity.
+        Real IOCs stress-tested with synthetic fixture containing
+        http://evil.example.com/payload.exe - still flags SUSPICIOUS,
+        URL visible in finding Detail.
+
 ---
 
 ## Edge cases discovered during testing

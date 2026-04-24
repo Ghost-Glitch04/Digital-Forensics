@@ -251,6 +251,108 @@ fix. Stress-tested: BOM-stripped copy now parses cleanly on PS 5.1.
 but leaves the redistribution / copy-operation case still broken. The
 ASCII rule solves both.
 
+---
+
+### Wrap Sort-Object -Unique and Select-Object -Unique output in @() under StrictMode
+<!-- tags: powershell, strictmode, pipeline-unroll, array-subexpression -->
+
+**When:** Writing a pipeline whose last stage uses `Sort-Object -Unique`
+or `Select-Object -Unique`, and the downstream code calls `.Count`,
+`.Length`, iterates via `foreach`, or indexes into the result (`[0]`,
+`[-1]`) - under `Set-StrictMode -Version Latest` (or `3.0`).
+
+**Not when:** The pipeline is guaranteed to produce 2+ elements (array
+stays an array), OR strict mode is off.
+
+**Rule:** Always force array context with `@()` at the callsite:
+
+```powershell
+# WRONG - fails on 0 or 1 matches under StrictMode:
+$items = $source | ForEach-Object { $_.X } | Sort-Object -Unique
+$items.Count        # throws if $items is scalar or $null
+
+# RIGHT - always an array, even for 0 or 1 elements:
+$items = @($source | ForEach-Object { $_.X } | Sort-Object -Unique)
+$items.Count        # 0, 1, or N consistently
+foreach ($i in $items) { ... }   # iterates 0, 1, or N times safely
+```
+
+Same rule applies to `Select-Object -Unique`, and to pipelines that
+terminate in `Where-Object` with a restrictive filter (which can
+produce 0 or 1 results and unroll).
+
+**Why:** PowerShell pipeline semantics: a pipeline producing exactly
+one value "unrolls" to the scalar, producing zero values returns
+`$null`. Under StrictMode, member access on a scalar string or `$null`
+(looking for `.Count`) throws `"The property 'Count' cannot be found
+on this object."` The `@()` array-subexpression operator forces the
+result to be an array of 0, 1, or N elements.
+
+Invoke-OfficeDocAnalysis v2.1.0 hit this exact trap when adding URL
+deduplication to the CFBF analysis unit. A synthetic fixture with
+zero URL matches and a synthetic fixture with a single URL both
+failed at Exit=20 with the StrictMode Count-on-scalar error; the
+real MSI fixture (4 URLs, naturally an array) passed. One `@()` wrap
+resolved it; subsequent 16/16 test PASS across both PS 5.1 and pwsh
+7.6 confirmed.
+
+**Companions:** powershell.md -> "Validate parseability before first execution of PowerShell scripts >500 lines"
+
+*Source: phase01:16*
+
+---
+
+### Known-benign pattern lists beat monolithic keyword lists for false-positive reduction
+<!-- tags: powershell, false-positive, pattern-classification, signal-vs-noise -->
+
+**When:** Building a detector that flags content as suspicious based on
+presence of keyword patterns in target files. Expected false-positive
+rate on benign inputs is non-trivial.
+
+**Not when:** The pattern set has zero known-benign overlap (rare but
+possible for very specific IOCs like CVE exploit markers).
+
+**Rule:** Separate the detection pattern list into two tiers:
+(1) patterns whose presence warrants SUSPICIOUS or ALERT, (2) a
+co-located allow-list of known-benign variants of those patterns
+that should demote to INFO severity. Emit both at the correct
+severity so the analyst still SEES that the pattern matched, but
+the verdict isn't driven by the benign instance.
+
+```powershell
+# Pattern list + benign allow-list
+$Script:BenignUrlPatterns = @(
+    '^https?://schemas\.microsoft\.com/',
+    '^https?://schemas\.openxmlformats\.org/',
+    '^https?://www\.w3\.org/'
+)
+
+# Classify at finding-emit time, not at scan time:
+foreach ($url in $detectedUrls) {
+    if (Test-UrlIsBenign $url) {
+        Add-Finding 'INFO' 'ExternalUrl' "Benign: $url"
+    } else {
+        Add-Finding 'SUSPICIOUS' 'ExternalUrl' "URL: $url"
+    }
+}
+```
+
+**Why:** A detector that flags every occurrence of `http://` as
+SUSPICIOUS produces false positives on every Office document that
+contains an XML namespace declaration (which is all of them). The
+same detector with benign-pattern classification produces the same
+findings but at INFO severity for expected benign content, so the
+verdict accurately reflects whether any ACTUAL suspicious URL is
+present. Signal-to-noise goes up; analyst trust in the tool goes
+up proportionally. Invoke-OfficeDocAnalysis v2.0.x had the former
+behavior; v2.1.0 added classification and eliminated an entire
+false-positive class on real production documents (ABN.doc case).
+
+**Companions:** forensic_triage.md -> "Regression-test every detection keyword against a known-clean file per target format"
+
+*Source: phase01:16*
+
+
 
 **When:** Authoring or editing a `.ps1` file that contains any characters
 outside the ASCII range — em-dashes, curly quotes, accented letters,

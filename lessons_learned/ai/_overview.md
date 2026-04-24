@@ -17,7 +17,7 @@ content.
 
 | File | Rules | Topics / keywords |
 |---|---|---|
-| [powershell.md](powershell.md) | 7 (1 superseded) | powershell, string-escape, byte-scan, performance, parse-check, array-indexof, hex-escape, interpreted-loop, file-encoding, ascii, bom, dotnet-version, ps51, redistribution |
+| [powershell.md](powershell.md) | 9 (1 superseded) | powershell, string-escape, byte-scan, performance, parse-check, array-indexof, hex-escape, interpreted-loop, file-encoding, ascii, bom, dotnet-version, ps51, redistribution, strictmode, pipeline-unroll, pattern-classification, false-positive-reduction |
 | [forensic_triage.md](forensic_triage.md) | 4 | false-positive, keyword-list, immutability, copy-then-analyze, fixture-pairing, contract-in-log, ooxml, cfbf, xmlns, encrypted-package, silent-wrong-answer |
 | [process.md](process.md) | 5 | prove-first, plan-mode, askuserquestion, benchmark-first, plan-first, discriminator-questions, switch-design, cli-ergonomics, retry, call-site-audit, idempotency |
 
