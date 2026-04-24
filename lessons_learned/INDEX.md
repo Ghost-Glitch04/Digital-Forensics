@@ -15,7 +15,7 @@ frontloaded), source pointer to phase file, and type classification.
 
 | File | Rules | Topics / keywords |
 |---|---|---|
-| [ai/powershell.md](ai/powershell.md) | 9 (1 superseded) | powershell, string-escape, byte-scan, performance, parse-check, file-encoding, ascii, bom, dotnet-version, ps51, redistribution, strictmode, pipeline-unroll, pattern-classification |
+| [ai/powershell.md](ai/powershell.md) | 10 (1 superseded) | powershell, string-escape, byte-scan, performance, parse-check, file-encoding, ascii, bom, dotnet-version, ps51, redistribution, strictmode, pipeline-unroll, pattern-classification, in-source-data, extensibility, audit-trail |
 | [ai/forensic_triage.md](ai/forensic_triage.md) | 4 | false-positive, keyword-list, immutability, copy-then-analyze, fixture-pairing, encrypted-package, silent-wrong-answer |
 | [ai/process.md](ai/process.md) | 5 | prove-first, plan-mode, askuserquestion, benchmark-first, switch-design, cli-ergonomics, retry, call-site-audit |
 
@@ -69,6 +69,7 @@ Rules and insights from the most recent reflections. New entries start here.
 | powershell, file-encoding, ascii, ps51, redistribution | Strict-ASCII .ps1 source is durable cross-runtime; BOM alone is fragile because copy tools strip it silently | phase01:15 | rule |
 | powershell, strictmode, pipeline-unroll | Wrap Sort-Object/Select-Object -Unique output in @() under StrictMode - pipeline unrolls to scalar on 1 element, $null on 0 | phase01:16 | bug |
 | false-positive, pattern-classification, signal-vs-noise | Separate detection pattern list into suspicious-tier + known-benign allow-list; classify at emit time to demote expected noise to INFO | phase01:16 | rule |
+| powershell, in-source-data, extensibility, audit-trail | Structured hashtable arrays with HOW-TO block + TEMPLATE entry + required Rationale field let non-authors extend in-source data lists safely | phase01:17 | rule |
 | powershell, dotnet-version, ps51 | `[Encoding]::Latin1` is .NET Core/5+ only; use `::GetEncoding(28591)` for PS 5.1 / .NET Framework 4.x cross-runtime compat | phase01:13 | rule |
 | retry, idempotency, call-site-audit | When adding retry to a resource, grep every call-site that touches the same resource — wrapping one site is a partial fix | phase01:14 | rule |
 | false-positive, encrypted-package, cfbf, silent-wrong-answer | Check for EncryptedPackage / EncryptionInfo UTF-16LE stream names before claiming CLEAN on CFBF input — encrypted OOXML routes to CFBF path | phase01:14 | rule |

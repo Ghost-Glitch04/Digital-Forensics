@@ -352,6 +352,99 @@ false-positive class on real production documents (ABN.doc case).
 
 *Source: phase01:16*
 
+---
+
+### Structured hashtable arrays with add-a-new-entry templates make in-source data editable by non-authors
+<!-- tags: powershell, in-source-data, extensibility, audit-trail, maintainability -->
+
+**When:** A script contains a data list (regex patterns, keywords,
+stream names, extensions, URLs, CLSIDs) that will be extended over
+time by people other than the original author - or by the same author
+months later without the mental model fresh. The list is intended to
+stay IN the script (single-file constraint).
+
+**Not when:** The list is short, truly static (e.g., a fixed-forever
+enum of valid verdict values), or the file is already externalized to
+JSON/YAML/CSV config.
+
+**Rule:** Instead of a flat array of raw values, use an array of
+hashtables where each entry carries its own metadata. Above the array,
+embed a HOW-TO comment block explaining the editing workflow. At the
+bottom of the array, leave a commented-out TEMPLATE entry ready for
+copy-paste-fill-in. Require a Rationale field per entry so every
+addition has a written justification.
+
+```powershell
+# -------------------------------------------------------------------
+#  HOW TO ADD A NEW <THING>
+#
+#  1. Copy the TEMPLATE block at the bottom of this array
+#  2. Uncomment the block, fill in all required fields
+#  3. Save. Run the script against a known-clean test fixture to verify.
+#
+#  FIELDS (all required):
+#    Pattern   = <what the code actually matches on>
+#    Name      = short label shown in logs / findings
+#    Rationale = one sentence on why this entry is <safe | wanted | etc>
+#    Added     = YYYY-MM-DD
+#    AddedBy   = your username / analyst handle
+# -------------------------------------------------------------------
+$Script:MyList = @(
+    @{ Pattern   = '^https?://schemas\.microsoft\.com/'
+       Name      = 'Microsoft XML schemas'
+       Rationale = 'Office XML namespace URIs used by every Office document'
+       Added     = '2026-04-24'
+       AddedBy   = 'ghost-glitch04' }
+
+    # ... more entries ...
+
+    # -- TEMPLATE: copy the block below, uncomment, fill in --
+    # @{ Pattern   = '^https?://YOURHOST/YOURPATH'
+    #    Name      = 'Short label'
+    #    Rationale = 'Why this entry is included'
+    #    Added     = 'YYYY-MM-DD'
+    #    AddedBy   = 'your-handle' }
+)
+```
+
+Pair this with a helper that returns the matched entry (not just a
+boolean) so downstream code can include the entry's Name in log
+messages and finding details:
+
+```powershell
+function Get-MyListMatch {
+    param([Parameter(Mandatory)][string]$Input)
+    foreach ($entry in $Script:MyList) {
+        if ($Input -match $entry.Pattern) { return $entry }
+    }
+    return $null
+}
+```
+
+**Why:** Three maintenance wins over a flat array:
+
+1. **Audit trail.** Each entry carries why/who/when. Six months from
+   now nobody has to dig through git history or remember institutional
+   knowledge to know why an entry is there.
+2. **Self-guidance.** The HOW-TO block and TEMPLATE mean a future
+   contributor (or future-you) can add an entry without grepping the
+   rest of the script to figure out the shape.
+3. **Attribution in output.** Returning the matched entry rather than
+   a boolean lets log lines and structured findings identify which
+   specific pattern matched - useful for analyst trust ("why was this
+   demoted to INFO?") and for tuning the list over time.
+
+Invoke-OfficeDocAnalysis v2.2.0 restructured `$Script:BenignUrlPatterns`
+from a flat 9-element regex array to a hashtable-array with all five
+fields populated. No external config file, no new parameters, no
+breaking API changes. Added a 60-line delta and one new helper; 16/16
+tests passed post-change; finding Details now read `Benign (Microsoft
+XML schemas): http://...` instead of the previous generic form.
+
+**Companions:** forensic_triage.md -> "Regression-test every detection keyword against a known-clean file per target format", powershell.md -> "Known-benign pattern lists beat monolithic keyword lists for false-positive reduction"
+
+*Source: phase01:17*
+
 
 
 **When:** Authoring or editing a `.ps1` file that contains any characters

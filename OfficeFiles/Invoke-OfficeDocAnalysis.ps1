@@ -70,10 +70,20 @@
 
 .NOTES
     Author  : Ghost-Glitch04
-    Version : 2.1.0
+    Version : 2.2.0
     Date    : 2026-04-24
 
     Changelog:
+      2.2.0 - Benign-URL pattern list modularized as structured in-source
+              data. Flat regex array replaced with array of hashtables,
+              each entry carrying Pattern + Name + Rationale + Added +
+              AddedBy fields for audit. HOW-TO block + TEMPLATE placeholder
+              embedded in the config section so analysts can add new
+              patterns by copy-paste-fill-in. New Get-BenignUrlMatch helper
+              returns the matched entry so CFBF and OOXML URL findings now
+              attribute WHICH pattern classified a URL as benign (e.g.
+              'Benign (Microsoft XML schemas): http://...'). Script
+              remains single-file; no external config, no new parameters.
       2.1.0 - URL-finding signal improvement. CFBF and OOXML URL
               detectors now extract the full URL (not just the scheme
               prefix) and classify against a known-benign-namespace
@@ -149,7 +159,7 @@ $ErrorActionPreference = 'Stop'
 # ============================================================
 # CONFIGURATION
 # ============================================================
-$Script:Version       = '2.1.0'
+$Script:Version       = '2.2.0'
 $Script:ScriptName    = 'Invoke-OfficeDocAnalysis'
 $Script:LogFile       = $null   # set in Main bootstrap
 $Script:WorkingDir    = $null   # set by New-Workspace unit
@@ -184,21 +194,89 @@ $Script:SuspiciousKeywords = @(
 # scheme string appeared in binary content. Covers http, https, ftp, file.
 $Script:UrlRegex = '(?:https?|ftp|file)://[A-Za-z0-9\._\-/~\?&=\+%#:,;@!\$\*\(\)]+'
 
-# Benign-URL patterns - XML namespace URIs and other standard scheme URLs
-# that appear in virtually every legitimate Office document. URLs matching
-# any of these patterns are demoted from SUSPICIOUS to INFO. The list is
-# conservative: add only URL prefixes that have NO known threat-intel
-# overlap and appear in the structural skeleton of standard Office content.
+# -------------------------------------------------------------------
+#  HOW TO ADD A NEW BENIGN URL PATTERN
+#
+#  1. Copy the TEMPLATE block at the bottom of this array
+#  2. Uncomment the block, fill in all five fields
+#  3. Save. Run the script against a known-clean test file to verify
+#     the new pattern does not accidentally match a suspicious URL.
+#  4. No other code changes needed.
+#
+#  FIELDS (all required):
+#    Pattern   = regex anchored with ^ and escaped literals
+#    Name      = short label shown in finding Detail (e.g. 'Org intranet')
+#    Rationale = one sentence on why this URL class is benign
+#    Added     = YYYY-MM-DD
+#    AddedBy   = your username / analyst handle
+#
+#  SAFETY: A pattern here DEMOTES matching URLs from SUSPICIOUS to INFO.
+#  Only add patterns for URL classes with no known threat-intel overlap.
+#  When in doubt, leave it out - false negatives are worse than analyst
+#  fatigue. Every pattern should have a written Rationale before it
+#  ships - if you cannot explain why it is benign, do not add it.
+# -------------------------------------------------------------------
 $Script:BenignUrlPatterns = @(
-    '^https?://schemas\.microsoft\.com/',
-    '^https?://schemas\.openxmlformats\.org/',
-    '^https?://schemas\.openxml\.org/',
-    '^https?://schemas\.xmlsoap\.org/',
-    '^https?://www\.w3\.org/',
-    '^https?://purl\.org/dc/',
-    '^https?://ns\.adobe\.com/',
-    '^https?://www\.iana\.org/',
-    '^https?://sdx\.microsoft\.com/'
+    @{ Pattern   = '^https?://schemas\.microsoft\.com/'
+       Name      = 'Microsoft XML schemas'
+       Rationale = 'Office XML namespace URIs used by every Office document'
+       Added     = '2026-04-24'
+       AddedBy   = 'ghost-glitch04' }
+
+    @{ Pattern   = '^https?://schemas\.openxmlformats\.org/'
+       Name      = 'Open XML Formats schemas'
+       Rationale = 'ECMA-376 Office Open XML namespace URIs'
+       Added     = '2026-04-24'
+       AddedBy   = 'ghost-glitch04' }
+
+    @{ Pattern   = '^https?://schemas\.openxml\.org/'
+       Name      = 'OpenXML schemas (alt)'
+       Rationale = 'Alternate spelling of Open XML schema domain'
+       Added     = '2026-04-24'
+       AddedBy   = 'ghost-glitch04' }
+
+    @{ Pattern   = '^https?://schemas\.xmlsoap\.org/'
+       Name      = 'SOAP schemas'
+       Rationale = 'SOAP/WSDL namespace URIs in Office web-service references'
+       Added     = '2026-04-24'
+       AddedBy   = 'ghost-glitch04' }
+
+    @{ Pattern   = '^https?://www\.w3\.org/'
+       Name      = 'W3C standards'
+       Rationale = 'XHTML, XMLDSig, XPath, XSL standard namespace URIs'
+       Added     = '2026-04-24'
+       AddedBy   = 'ghost-glitch04' }
+
+    @{ Pattern   = '^https?://purl\.org/dc/'
+       Name      = 'Dublin Core metadata'
+       Rationale = 'Standard document-metadata namespace'
+       Added     = '2026-04-24'
+       AddedBy   = 'ghost-glitch04' }
+
+    @{ Pattern   = '^https?://ns\.adobe\.com/'
+       Name      = 'Adobe XMP'
+       Rationale = 'Adobe Extensible Metadata Platform namespace'
+       Added     = '2026-04-24'
+       AddedBy   = 'ghost-glitch04' }
+
+    @{ Pattern   = '^https?://www\.iana\.org/'
+       Name      = 'IANA registries'
+       Rationale = 'Standards-body registry references'
+       Added     = '2026-04-24'
+       AddedBy   = 'ghost-glitch04' }
+
+    @{ Pattern   = '^https?://sdx\.microsoft\.com/'
+       Name      = 'Microsoft SDX'
+       Rationale = 'Office deployment XML namespace'
+       Added     = '2026-04-24'
+       AddedBy   = 'ghost-glitch04' }
+
+    # -- TEMPLATE: copy the block below, uncomment, fill in all five fields --
+    # @{ Pattern   = '^https?://YOURHOST/YOURPATH'
+    #    Name      = 'Short label'
+    #    Rationale = 'Why this URL class is benign'
+    #    Added     = 'YYYY-MM-DD'
+    #    AddedBy   = 'your-handle' }
 )
 
 $Script:SuspiciousExtensions = @('.exe','.dll','.ps1','.bat','.cmd','.scr','.vbs','.js','.hta','.msi')
@@ -477,15 +555,33 @@ function Find-BytePattern {
 #           by the URL-detection logic in both CFBF and OOXML paths to
 #           demote XML-namespace URIs out of the SUSPICIOUS bucket.
 # Inputs  : -Url (string)
-# Outputs : $true if matches any pattern in $Script:BenignUrlPatterns
-# Depends : $Script:BenignUrlPatterns
+# Outputs : $true if matches any entry in $Script:BenignUrlPatterns
+# Depends : $Script:BenignUrlPatterns (array of hashtables; uses .Pattern)
 #endregion ==========================================================
 function Test-UrlIsBenign {
     param([Parameter(Mandatory)][string]$Url)
-    foreach ($pat in $Script:BenignUrlPatterns) {
-        if ($Url -match $pat) { return $true }
+    foreach ($entry in $Script:BenignUrlPatterns) {
+        if ($Url -match $entry.Pattern) { return $true }
     }
     return $false
+}
+
+#region ============================================================
+# HELPER: Get-BenignUrlMatch
+# Purpose : Same iteration as Test-UrlIsBenign but returns the first
+#           matching pattern-entry rather than a boolean. Callers use
+#           the returned entry's .Name for audit attribution in finding
+#           Detail strings (e.g. "Benign (Microsoft XML schemas): URL").
+# Inputs  : -Url (string)
+# Outputs : Matched hashtable entry, or $null if no match
+# Depends : $Script:BenignUrlPatterns
+#endregion ==========================================================
+function Get-BenignUrlMatch {
+    param([Parameter(Mandatory)][string]$Url)
+    foreach ($entry in $Script:BenignUrlPatterns) {
+        if ($Url -match $entry.Pattern) { return $entry }
+    }
+    return $null
 }
 
 #region ============================================================
@@ -888,8 +984,9 @@ function Invoke-OOXMLAnalysis {
                     $attrUrlPattern = '(?:Target|src|Source)\s*=\s*"([^"]*(?:https?|ftp|file)://[^"]+)"'
                     foreach ($m in [regex]::Matches($content, $attrUrlPattern)) {
                         $url = $m.Groups[1].Value
-                        if (Test-UrlIsBenign $url) {
-                            Add-Finding 'INFO' 'ExternalUrl' "Benign namespace URL in attribute: $url" $relPath
+                        $benign = Get-BenignUrlMatch $url
+                        if ($benign) {
+                            Add-Finding 'INFO' 'ExternalUrl' "Benign ($($benign.Name)) URL in attribute: $url" $relPath
                         } else {
                             Add-Finding 'SUSPICIOUS' 'ExternalUrl' "URL in attribute: $url" $relPath
                         }
@@ -1015,8 +1112,9 @@ function Invoke-CFBFAnalysis {
         $susUrlCount = 0
         $benignUrlCount = 0
         foreach ($url in $uniqueUrls) {
-            if (Test-UrlIsBenign $url) {
-                Add-Finding 'INFO' 'ExternalUrl' "Benign XML namespace URI: $url"
+            $benign = Get-BenignUrlMatch $url
+            if ($benign) {
+                Add-Finding 'INFO' 'ExternalUrl' "Benign ($($benign.Name)): $url"
                 $benignUrlCount++
             } else {
                 Add-Finding 'SUSPICIOUS' 'ExternalUrl' "URL in binary content: $url"

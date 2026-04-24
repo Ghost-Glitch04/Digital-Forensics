@@ -201,6 +201,36 @@ Next  : (none - landed clean as v2.1.0) Effect on user's ABN.doc case:
         http://evil.example.com/payload.exe - still flags SUSPICIOUS,
         URL visible in finding Detail.
 
+### [2026-04-24] Attempt 9 - Benign-URL pattern list modularized for low-friction maintenance (v2.2.0)
+Tried : User request: "I would need such an array to be modular. So as
+        more URLs are found benign I could expand and maintain that array
+        with minimum fuss." Explicit constraint: keep the array IN the
+        script (single-file tool), not externalized. v2.1.0's flat regex
+        array had three maintenance weaknesses - no per-entry metadata,
+        no self-guidance on how to add an entry, findings couldn't say
+        which pattern matched.
+Result: SUCCESS as v2.2.0. No regressions on the 8-test matrix across
+        PS 5.1 + pwsh 7 (16/16 PASS).
+Reason: Converted the flat regex array to an array of hashtables with
+        five required fields per entry (Pattern, Name, Rationale, Added,
+        AddedBy). Embedded a HOW-TO block directly above the array with
+        the editing workflow, plus a commented-out TEMPLATE at the
+        bottom ready for copy-paste-fill-in. Added Get-BenignUrlMatch
+        helper that returns the matched entry (rather than a boolean)
+        so the finding Detail can attribute which pattern classified a
+        URL - example: "Benign (Microsoft XML schemas): http://..." now
+        instead of the previous "Benign XML namespace URI: http://...".
+        Test-UrlIsBenign kept for backward compatibility; internal call
+        sites migrated to Get-BenignUrlMatch to pick up attribution.
+Next  : (none - landed clean as v2.2.0) Editing workflow for future
+        pattern additions is now "copy the TEMPLATE, fill in five
+        fields, save" with no other code changes required. The
+        Rationale field is required by convention and forces analyst
+        justification at addition time - prevents pattern drift over
+        months. README updated with a full "Customizing benign URL
+        classification" section including a worked example for adding
+        org-specific intranet URLs.
+
 ---
 
 ## Edge cases discovered during testing

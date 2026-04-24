@@ -5,7 +5,7 @@ EDR false-positive triage. Detects macros, embedded objects, template
 injection, Equation Editor exploits, XLM macros, and encrypted packages
 — without ever modifying the source file.
 
-**Version:** 2.1.0
+**Version:** 2.2.0
 **Author:** Ghost-Glitch04
 **License:** (TBD — will be set at public-release time)
 
@@ -45,7 +45,7 @@ round-trip and emitted to the log on every run.
 - **XLM / Excel 4.0 macros** (Auto_Open, Macro1, veryHidden indicators)
 - **Encrypted packages** (EncryptedPackage / EncryptionInfo stream names — flags silent-CLEAN false negatives)
 - **Suspicious keyword LOLBin list** (PowerShell, mshta, regsvr32, certutil, bitsadmin, CreateObject, Shell.Application, etc.)
-- **External URLs** — full URL is captured and included in finding Detail. Known-benign XML namespace URIs (schemas.microsoft.com, openxmlformats.org, w3.org, etc.) report as INFO; all other URLs report as SUSPICIOUS with the URL itself visible, so the analyst doesn't need a separate extraction step.
+- **External URLs** — full URL is captured and included in finding Detail. Known-benign XML namespace URIs (schemas.microsoft.com, openxmlformats.org, w3.org, etc.) report as INFO with the matching pattern's name shown inline (e.g. `Benign (Microsoft XML schemas): http://...`); all other URLs report as SUSPICIOUS with the URL itself visible, so the analyst doesn't need a separate extraction step. The benign-pattern list is **customizable** — see "Customizing benign URL classification" below.
 - **Extension spoofing** (magic bytes don't match declared extension)
 
 ### What it does NOT do
@@ -93,10 +93,10 @@ Unblock-File -LiteralPath .\Invoke-OfficeDocAnalysis.ps1
 
 ### 3. Verify script integrity
 
-The published SHA-256 for **v2.1.0** is:
+The published SHA-256 for **v2.2.0** is:
 
 ```
-B9316CFC078AD3286FF2C847115857E61BFD2676FD27C57F9CCFEEA8BDC70C53
+AFBCC5E9FA32A492516D2DC56881FA6CAEA9E9E6A78D057B8A1D1A305BA98AF8
 ```
 
 Verify locally:
@@ -600,6 +600,111 @@ changing bytes. The script treats LastWriteTime drift as WARN (not
 FATAL) and SHA-256 mismatch as FATAL. A FATAL `SOURCE_MUTATED` message
 means the file bytes actually changed — investigate the invoking
 process and any concurrent file access.
+
+---
+
+## Customizing benign URL classification
+
+The script ships with a list of known-benign URL patterns (XML namespace
+URIs from microsoft.com, openxmlformats.org, w3.org, etc.). URLs that
+match any pattern in this list are demoted from SUSPICIOUS to INFO in
+the findings, so they don't drive a false-positive verdict on benign
+Office documents.
+
+As your corpus grows, you'll discover additional URLs that are benign
+for your organization (intranet hosts, vendor template provenance URLs,
+internal SharePoint). You can add them to the list — **the list lives
+inside the script itself**, no external config file, no rebuild.
+
+### Where the list lives
+
+Open `Invoke-OfficeDocAnalysis.ps1` and search for `$Script:BenignUrlPatterns`.
+The array is in the CONFIGURATION section near the top of the file.
+
+### How to add a new pattern
+
+The script embeds its own HOW-TO instructions above the array. The
+workflow is:
+
+1. Scroll to the bottom of the `$Script:BenignUrlPatterns = @(...)` array
+2. Find the `# -- TEMPLATE:` block (commented out)
+3. Copy the template, uncomment it, fill in all five fields
+4. Save the script
+5. Run against a known-clean fixture to confirm the new pattern works
+
+### Required fields per entry
+
+| Field | Purpose |
+|---|---|
+| `Pattern` | Regex, anchored with `^` and with literal dots escaped as `\.` |
+| `Name` | Short human-readable label (appears in the finding Detail) |
+| `Rationale` | One sentence explaining why this URL class is benign (audit trail — required) |
+| `Added` | `YYYY-MM-DD` date the entry was added (audit breadcrumb) |
+| `AddedBy` | Analyst username / handle (audit breadcrumb) |
+
+All five are required by convention. The Rationale field is the most
+important — a pattern without a written justification should never ship.
+
+### Worked example — adding an organization's intranet
+
+Your org runs `https://intranet.corp.local/` and your corporate template
+library at `https://templates.corp.local/`. Both appear legitimately in
+business docs. To demote them:
+
+```powershell
+    @{ Pattern   = '^https?://intranet\.corp\.local/'
+       Name      = 'Corp intranet'
+       Rationale = 'Internal intranet host used by Word header links'
+       Added     = '2026-05-03'
+       AddedBy   = 'analyst1' }
+
+    @{ Pattern   = '^https?://templates\.corp\.local/'
+       Name      = 'Corp template library'
+       Rationale = 'Internal template provenance URL embedded in .docm by Word'
+       Added     = '2026-05-03'
+       AddedBy   = 'analyst1' }
+```
+
+Drop both entries into the array (anywhere before the TEMPLATE block at
+the end). After saving, any URL matching those patterns appears as:
+
+```
+[INFO] [ExternalUrl] Benign (Corp intranet): https://intranet.corp.local/share/...
+```
+
+### Safety notes
+
+- **Patterns DEMOTE matches from SUSPICIOUS to INFO.** A pattern that's
+  too broad (e.g. `^https?://.*\.corp\.local/`) could demote a compromised
+  subdomain that you'd rather see flagged. Anchor tightly.
+- **When in doubt, leave it out.** A false negative (missed IOC) is worse
+  than a false positive (noise). Only add patterns for URL classes where
+  you have clear knowledge that the URL space is not abusable by an
+  attacker.
+- **Every pattern needs a Rationale.** If you can't articulate in one
+  sentence why the URL class is benign, don't add it. Six months from
+  now nobody will remember why a pattern is there — the Rationale field
+  is the audit answer.
+- **Version-bump on significant additions.** If you add more than a few
+  patterns to an internal fork, bump `$Script:Version` and update the
+  Changelog in `.NOTES` to keep the SHA-256 tracking honest.
+
+### Verify a new pattern before shipping
+
+Quick parse check:
+
+```powershell
+$errors = $null
+[System.Management.Automation.Language.Parser]::ParseFile(
+    '.\Invoke-OfficeDocAnalysis.ps1', [ref]$null, [ref]$errors
+) | Out-Null
+if ($errors) { 'FAIL — fix syntax' } else { 'OK' }
+```
+
+Then run against a fixture whose URLs include your new pattern and a
+known-hostile URL (e.g. the `synthetic-suspicious-url.doc` test fixture)
+to confirm the new pattern demotes only what you intended and doesn't
+suppress the hostile URL.
 
 ---
 

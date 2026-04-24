@@ -507,6 +507,68 @@ cycle in this session.
 
 ---
 
+### 17. Structured in-source data beats flat lists when analysts will extend the data (v2.2.0)
+
+Added 2026-04-24 after the user asked for the benign-URL pattern list
+to be "modular" so additions would require "minimum fuss" - explicitly
+wanting the array to stay IN the script rather than moved out to JSON
+or loaded from a parameter.
+
+v2.1.0 had a flat regex array:
+
+```powershell
+$Script:BenignUrlPatterns = @(
+    '^https?://schemas\.microsoft\.com/',
+    '^https?://schemas\.openxmlformats\.org/',
+    # ... 7 more ...
+)
+```
+
+Functionally correct but maintenance-hostile in three ways:
+1. No metadata per entry - six months later nobody remembers why a
+   pattern is there or who added it
+2. No self-guidance - a contributor opening the script has to infer
+   pattern shape from existing entries
+3. Finding Detail couldn't identify WHICH pattern matched a URL - only
+   that one did
+
+v2.2.0 restructured the array as hashtables with five required fields
+(Pattern / Name / Rationale / Added / AddedBy) plus:
+- A HOW-TO block directly above the array with the editing workflow
+- A commented-out TEMPLATE at the bottom ready to copy-paste
+- A new Get-BenignUrlMatch helper that returns the matched entry (not
+  just a boolean) so the finding Detail can show the pattern's Name
+- Findings now read `Benign (Microsoft XML schemas): http://schemas...`
+  instead of the previous generic `Benign XML namespace URI: http://...`
+
+The architecture stayed single-file. No external config, no new
+parameters, no new dependencies. The change was:
+- ~60 lines of script delta (mostly the hashtable entries with their
+  Rationale strings filled in)
+- No breaking API change - Add-Finding contract unchanged; JSON schema
+  unchanged; existing Test-UrlIsBenign boolean API retained for
+  backward compatibility
+- Adding a new pattern went from "squint at the regex and hope" to
+  "copy the template, fill in five fields, save"
+
+16/16 test pass across PS 5.1 + pwsh 7 after the change, including a
+new assertion that the finding Detail for the ABN-simulation fixture
+contains the literal string `Benign (Open XML Formats schemas)` -
+confirming pattern-match attribution reaches the log.
+
+**Lesson:** When a data list inside a script will be extended by people
+other than the original author (or by the same author months later
+without the mental model fresh), invest in structure over compactness.
+A flat array is shorter to read but longer to maintain safely. A
+structured hashtable array with required metadata fields (rationale,
+audit breadcrumbs) + in-source HOW-TO block + commented-out template
+at the end turns editing from an expert operation into a fill-in-the-
+blanks operation. The Rationale field in particular is the
+cheapest-possible audit mechanism - one required sentence per entry
+prevents pattern drift and costs nothing at runtime.
+
+---
+
 ## Carry-Forward Items
 
 | CF-ID | Summary | Opened | Notes |
