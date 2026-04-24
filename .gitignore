@@ -1,0 +1,196 @@
+# =============================================================================
+# GitHub Security Standards Compliance
+# Repository: Digital-Forensics (DFIR toolkit)
+# Last updated: 2026-04-24
+# =============================================================================
+
+# =============================================================================
+# LAYER 1: Credentials and Secrets
+# =============================================================================
+# NEVER commit credentials, API keys, tokens, or connection strings
+.env
+.env.local
+.env.*.local
+.env.*.example
+config.local.json
+config.local.yaml
+secrets.json
+credentials.json
+
+# =============================================================================
+# LAYER 2: Python and Virtual Environments
+# =============================================================================
+# Virtual environment directories
+venv/
+.venv/
+env/
+ENV/
+ircidrs/  # Excluded if this is a venv, but it contains scripts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Python cache
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# =============================================================================
+# LAYER 3: IDE and Editor Files
+# =============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.sublime-project
+*.sublime-workspace
+.emacs.d/
+*.vim
+
+# =============================================================================
+# LAYER 4: Build and Compilation Artifacts
+# =============================================================================
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.class
+*.jar
+*.out
+
+# =============================================================================
+# LAYER 5: Logs and Runtime Output
+# =============================================================================
+# Log files — may contain sensitive data from executions
+logs/
+log/
+*.log
+debug.log
+error.log
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Output and export directories from script runs
+output/
+outputs/
+output_*/
+export/
+exports/
+export_*/
+reports/
+report_*/
+results/
+result_*/
+
+# CSV/Excel exports from forensic analysis
+*.csv
+*.xlsx
+*.xls
+
+# =============================================================================
+# LAYER 6: OS and System Files
+# =============================================================================
+.DS_Store
+Thumbs.db
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+desktop.ini
+
+# =============================================================================
+# LAYER 7: Temporary and Cache Files
+# =============================================================================
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+.cache/
+.tmp/
+temp/
+tmp/
+.venv-*/
+
+# =============================================================================
+# LAYER 8: Node.js (if used)
+# =============================================================================
+node_modules/
+npm-debug.log
+yarn-error.log
+.npm
+
+# =============================================================================
+# LAYER 9: Ruby (if used)
+# =============================================================================
+Gemfile.lock
+.ruby-version
+vendor/bundle/
+
+# =============================================================================
+# LAYER 10: Project-Specific Forensic Output
+# =============================================================================
+# Event log exports and captures
+*.evtx
+*.evt
+*.cap
+*.pcap
+*.pcapng
+
+# Memory dumps and artifacts
+*.dmp
+*.mem
+*.img
+*.iso
+
+# Extracted/decompiled artifacts
+extracted/
+decompiled/
+artifacts/
+evidence/
+
+# Analysis and report output
+*_analysis.txt
+*_report.txt
+*_findings.json
+
+# =============================================================================
+# EXCEPTIONS — Files that SHOULD be committed despite matching above
+# =============================================================================
+# Keep template/example files that document requirements
+!.env.example
+!config.example.json
+!example_output/
+!.github/

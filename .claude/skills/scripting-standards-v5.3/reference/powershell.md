@@ -637,3 +637,125 @@ Cross-language triage tools that grep for `SCRIPT_START` as the first line of a 
 **The fix:** Change the `SCRIPT_FAILED` log to `$($_.Exception.Message)`, matching the unit-level pattern.
 
 **Lesson encoded in the file:** Both unit-level and script-level catches in this file now use `$_.Exception.Message` for the user-visible error text. `$_.ScriptStackTrace` is still used separately in the DEBUG-level `STACK_TRACE` line where the full record is appropriate.
+
+---
+
+## String escape gotchas
+
+**PowerShell double-quoted strings do NOT support `\x` hex escapes.**
+
+A literal `"\x00"` in a PowerShell string is the four-character string
+`\`, `x`, `0`, `0` — not a null byte. This is an asymmetry with most
+other mainstream languages (Python, Bash, C#, Go, JavaScript all support
+`\x` hex escapes) and is silent when misused: a regex built from a
+`\x`-looking string simply never matches the null-byte-containing data
+it was meant to find.
+
+For null bytes:
+- Inline in a string: use the backtick-zero escape `` `0 ``
+- Binary pattern matching: build a `[byte[]]` explicitly via encoding
+
+```powershell
+# WRONG — "V\x00B\x00A\x00" is a 9-character string; matches no null bytes
+$pattern = "V\x00B\x00A\x00"
+if ($content -match $pattern) { ... }   # always false against real CFBF
+
+# RIGHT — use Encoding to produce the byte sequence
+$needle = [System.Text.Encoding]::Unicode.GetBytes('VBA')  # UTF-16LE: 56-00-42-00-41-00
+$offset = Find-BytePattern -Haystack $bytes -Needle $needle
+
+# RIGHT — use backtick-zero for inline null in a string
+$nullByte = "`0"
+```
+
+**Real-world case study:** `Invoke-OfficeDocAnalysis.ps1` v1 shipped a
+CFBF OLE-stream detection unit that was a silent no-op for over a year
+because its author assumed `"V\x00B\x00A\x00"` would match the UTF-16LE
+byte sequence `56-00-42-00-41-00` in a Compound Binary file's raw
+content. Every regex in the unit failed to match; no findings ever
+fired. v2 replaced the approach with `[System.Text.Encoding]::Unicode.GetBytes()`
++ `Find-BytePattern` and detected the synthetic needle at the expected
+offset on first run. See Digital-Forensics repo
+`lessons_learned/phase01_office_doc_v2_rewrite.md` §Bugs 2 for the
+full timeline.
+
+**Generalizable rule:** When porting a regex or string literal from a
+language with `\x` escapes into PowerShell, stop and rebuild the
+pattern from `[Encoding]::*.GetBytes()` or from explicit `` `0 ``
+escapes. Never paste a cross-language byte-pattern string into PS and
+hope.
+
+---
+
+## Performance patterns
+
+### PowerShell interpreted loops process ~1M bytes/sec
+
+Any PS-interpreted scan (`for`, `foreach`, `while`) over a byte array,
+string, or large record collection runs at roughly 1M iterations per
+second on modern hardware — orders of magnitude slower than the same
+scan in a compiled language. For any operation larger than ~1MB in a
+hot path, the loop itself becomes the bottleneck, independent of the
+algorithm's big-O.
+
+**Rule:** For any PS scan over >1MB of data, benchmark an alternative
+against the naive-loop baseline before committing. A 2-minute
+benchmark on a realistic buffer is the bar.
+
+Canonical alternatives, from fastest to slowest-but-sometimes-useful:
+
+| Pattern | Typical speedup vs. naive loop | When it applies |
+|---|---|---|
+| `[Array]::IndexOf($arr, $first, $pos)` + tail-verify | 50–100× | Byte-pattern needle in a byte array |
+| `[regex]::Matches` on Latin-1 string projection of byte array | 20–30× | Multiple needles or regex-style matching |
+| `[System.Linq.Enumerable]` methods (via `using namespace System.Linq`) | situational | LINQ-amenable transforms on collections |
+| `.Where()` / `.ForEach()` script methods | 2–5× | Collection filtering when the body is trivial |
+
+**Reference implementation — byte pattern scan:**
+
+```powershell
+function Find-BytePattern {
+    param([byte[]]$Haystack, [byte[]]$Needle)
+    if ($Needle.Length -eq 0 -or $Haystack.Length -lt $Needle.Length) { return -1 }
+    $maxStart = $Haystack.Length - $Needle.Length
+    $first    = $Needle[0]
+    $pos      = 0
+    while ($pos -le $maxStart) {
+        $found = [Array]::IndexOf($Haystack, $first, $pos)
+        if ($found -lt 0 -or $found -gt $maxStart) { return -1 }
+        $match = $true
+        for ($j = 1; $j -lt $Needle.Length; $j++) {
+            if ($Haystack[$found + $j] -ne $Needle[$j]) { $match = $false; break }
+        }
+        if ($match) { return $found }
+        $pos = $found + 1
+    }
+    return -1
+}
+```
+
+**Real-world case study:** `Invoke-OfficeDocAnalysis.ps1` v2 first
+implemented `Find-BytePattern` with a pure-PS nested for-loop. Against
+a real 5.4MB CFBF MSI with ~25 needle scans per Analysis phase, total
+phase duration was 11.2 seconds — unacceptable for a triage tool
+expected to return under 2 seconds. Benchmark on a 5MB random buffer
+with a known needle at offset 1024000:
+
+```
+Naive PS nested loop:      1152ms
+Latin-1 IndexOf:             42ms  (27× faster)
+[Array]::IndexOf + verify:   17ms  (68× faster) ← selected
+```
+
+After adopting the `[Array]::IndexOf + tail-verify` pattern shown
+above, MSI total duration dropped to 1.12 seconds (10.7× faster
+end-to-end); Analysis phase alone dropped to 473ms (23.7× faster).
+See Digital-Forensics repo
+`lessons_learned/phase01_office_doc_v2_rewrite.md` §Bugs 3 for the
+full timeline.
+
+**Generalizable rule:** Intuition transferred from other languages
+("a simple nested loop is fine") misfires in PowerShell because the
+interpreter is the cost center, not the algorithm. Trust measurement
+over authority; a 2-minute benchmark routinely reveals 10-100×
+speedups hiding in plain sight.
