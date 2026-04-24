@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# ============================================================
+# UNIT: pre-commit
+# Purpose : Invoke the L2 verification harness on every commit
+#           that touches the scripting-standards skill repository.
+# Inputs  : None. Harness queries working-tree state directly.
+# Outputs : Exit code from verify-l2.sh (0 pass, 40 fail, 99 harness error)
+# Depends : verify-l2.sh in the same directory; bash 4+; git
+# ============================================================
+#
+# This hook is the institutional form of the /tmp/l2_verify.sh pattern
+# named in <lesson:2026-04-22:l2-harness-must-be-line-ending-aware> —
+# moved from temp-file authoring discipline to mechanical pre-commit
+# enforcement.
+#
+# Installation — see skill_development/authoring-helpers/README.md.
+# Bypass (exceptional cases only): git commit --no-verify
+#
+# Cross-refs:
+#   <lesson:2026-04-22:l2-harness-must-be-line-ending-aware>
+#   <devlog:2026-04-23:v5-3-headline-automated-l2-enforcement>
+#   <devlog:2026-04-23:v5-3-topology-two-files>
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+HARNESS="$REPO_ROOT/skill_development/authoring-helpers/verify-l2.sh"
+
+if [[ ! -x "$HARNESS" ]]; then
+    echo "[FATAL] L2 harness not found or not executable:" >&2
+    echo "        $HARNESS" >&2
+    echo "        Fix: chmod +x \"$HARNESS\"" >&2
+    exit 99
+fi
+
+exec "$HARNESS"

@@ -1,7 +1,7 @@
 # PowerShell Scripting Patterns
 
 Reference for Ghost's scripting standards applied to PowerShell.
-Load this file when writing any PowerShell script.
+Load this file when writing or debugging any PowerShell script.
 
 ---
 
@@ -23,7 +23,7 @@ Load this file when writing any PowerShell script.
 
 .NOTES
     Author  : Ghost
-    Created : 2025-03-27
+    Created : 2026-04-11
     Version : 1.0.0
 #>
 
@@ -126,6 +126,12 @@ function Write-Log {
 # Inputs  : -ScriptBlock, -OperationName, -MaxAttempts, -DelaySeconds
 # Outputs : Return value of ScriptBlock on success; throws on exhaustion
 # Depends : Write-Log
+#
+# IDEMPOTENCY: only use this helper for operations safe to retry —
+# reads, stable-ID updates, deletes, or operations with an idempotency
+# key. A bare POST /charges, POST /send-email, or POST /webhook is NOT
+# safe to retry blindly; a retry that doubles payments or sends duplicate
+# emails is worse than no retry at all. See SKILL.md "Idempotency Rule".
 #endregion ==========================================================
 
 function Invoke-WithRetry {
@@ -197,11 +203,11 @@ function Invoke-PhaseGate {
     if ($Summary) {
         Write-Log -Level INFO -Message "PHASE_SUMMARY: $PhaseName | $Summary"
     }
-    Write-Log -Level INFO -Message "PHASE_END: $PhaseName | Phase Duration: ${phaseDuration}s"
+    Write-Log -Level INFO -Message ("PHASE_END: $PhaseName | Phase Duration: {0:N3}s" -f $phaseDuration)
 
     if ($StopAfterPhase -eq $PhaseName) {
         $script:ScriptTimer.Stop()
-        Write-Log -Level INFO -Message "PHASE_GATE: Stopping cleanly after phase '$PhaseName' | Total Duration: $($script:ScriptTimer.Elapsed.TotalSeconds)s"
+        Write-Log -Level INFO -Message ("PHASE_GATE: Stopping cleanly after phase '$PhaseName' | Total Duration: {0:N3}s" -f $script:ScriptTimer.Elapsed.TotalSeconds)
         exit 0
     }
 }
@@ -225,9 +231,16 @@ Log infrastructure bootstrap (creating the log directory and setting `$script:Lo
 #endregion ==========================================================
 
 function Initialize-Script {
-    Write-Log -Level INFO -Message "SCRIPT_START: $(Split-Path $PSCommandPath -Leaf) | User: $env:USERNAME | Host: $env:COMPUTERNAME"
-    Write-Log -Level INFO -Message "ENV_SNAPSHOT: PSVersion=$($PSVersionTable.PSVersion) | OS=$($PSVersionTable.OS) | WorkingDir=$(Get-Location) | ScriptPath=$PSCommandPath"
-    Write-Log -Level INFO -Message "PARAMS: InputPath='$InputPath' | StopAfterPhase='$StopAfterPhase' | DryRun=$DryRun | DebugMode=$DebugMode"
+    # Cross-platform user/host: $env:USERNAME and $env:COMPUTERNAME are Windows-only.
+    # On Linux/macOS pwsh they're unset, producing empty User/Host fields in logs.
+    # Fall back to $env:USER and [System.Net.Dns]::GetHostName() so SCRIPT_START is
+    # always populated regardless of where the script runs.
+    $userName = if ($env:USERNAME) { $env:USERNAME } else { $env:USER }
+    $hostName = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { [System.Net.Dns]::GetHostName() }
+
+    Write-Log -Level INFO -Message "SCRIPT_START: $(Split-Path $PSCommandPath -Leaf) | User: $userName | Host: $hostName"
+    Write-Log -Level INFO -Message "ENV_SNAPSHOT: ps_version=$($PSVersionTable.PSVersion) | os=$($PSVersionTable.OS) | working_dir=$(Get-Location) | script_path=$PSCommandPath"
+    Write-Log -Level INFO -Message "PARAMS: input_path='$InputPath' | stop_after_phase='$StopAfterPhase' | dry_run=$DryRun | debug_mode=$DebugMode"
 
     if ($DryRun)    { Write-Log -Level WARN -Message "DRY-RUN MODE ACTIVE — no writes, API mutations, or system changes will occur" }
     if ($DebugMode) { Write-Log -Level INFO -Message "DEBUG MODE ACTIVE — DEBUG entries will appear on console" }
@@ -263,7 +276,7 @@ function Verify-EntraConnection {
         exit 30
     } finally {
         $unitTimer.Stop()
-        Write-Log -Level INFO -Message "UNIT_END: Verify-EntraConnection | Duration: $($unitTimer.Elapsed.TotalSeconds)s"
+        Write-Log -Level INFO -Message ("UNIT_END: Verify-EntraConnection | Duration: {0:N3}s" -f $unitTimer.Elapsed.TotalSeconds)
     }
 }
 ```
@@ -352,7 +365,7 @@ try {
     exit 20
 } finally {
     $unitTimer.Stop()
-    Write-Log -Level INFO -Message "UNIT_END: UnitName | Duration: $($unitTimer.Elapsed.TotalSeconds)s"
+    Write-Log -Level INFO -Message ("UNIT_END: UnitName | Duration: {0:N3}s" -f $unitTimer.Elapsed.TotalSeconds)
 }
 ```
 
@@ -447,6 +460,56 @@ if (-not $ValidatedRecords) {
 
 ---
 
+## CONTRACT Block for Cross-File Units
+
+When a unit is called from another file — not just a local helper — wrap its unit header with a `<CONTRACT>` block. The block declares the formal integration contract in a grep-stable form so consumers can be enumerated mechanically. See `reference/integration-tracking.md` for the full Format Contract and Change Impact Protocol.
+
+Field keys use **PascalCase** in PowerShell CONTRACT blocks, matching PowerShell's native parameter naming convention. This deviates from the log format contract's `lowercase_snake_case` rule — contracts are read by humans writing PowerShell, and matching the language's convention wins over cross-language uniformity for this specific case.
+
+```powershell
+# <CONTRACT id="Get-UserToken" version="1" scope="public">
+#   PARAMS:
+#     UserId    [string]   required
+#     Scope     [string[]] required
+#     TenantId  [string]   optional, default=$script:DefaultTenant
+#   RETURNS: [PSCustomObject]
+#     Token      [string]   bearer token
+#     ExpiresAt  [datetime] UTC expiry
+#     Scopes     [string[]] granted scopes (may differ from requested)
+#   THROWS: AuthenticationException, NetworkException
+#   SIDE_EFFECTS: writes to $script:TokenCache
+# </CONTRACT>
+# ============================================================
+# UNIT: Get-UserToken
+# Purpose : Obtain a bearer token for the specified user/scope
+# Inputs  : UserId, Scope, TenantId
+# Outputs : Token object (see CONTRACT)
+# Depends : $script:DefaultTenant (module state)
+# ============================================================
+function Get-UserToken {
+    param(
+        [Parameter(Mandatory)][string]$UserId,
+        [Parameter(Mandatory)][string[]]$Scope,
+        [string]$TenantId = $script:DefaultTenant
+    )
+    # ...
+}
+```
+
+Consumers that read specific fields off the return value add a `<USES>` marker immediately above the call site:
+
+```powershell
+# <USES contract="Get-UserToken" version="1" fields="Token,ExpiresAt">
+$auth = Get-UserToken -UserId $u -Scope @('read')
+if ((Get-Date) -lt $auth.ExpiresAt) {
+    $headers['Authorization'] = "Bearer $($auth.Token)"
+}
+```
+
+The `<USES>` marker is mandatory for consumers of `public` contracts that read specific fields; optional but recommended elsewhere. Return-shape changes to `public` contracts are traced through these markers, not by grepping for property-access patterns.
+
+---
+
 ## Main Block Pattern
 
 The Main Block brings everything together. Log infrastructure bootstrap (creating the log directory and setting `$script:LogFile`) runs first — before Phase 1 — because `Invoke-PhaseStart` needs `Write-Log` to work. Everything after that follows the phased deployment model.
@@ -458,7 +521,14 @@ The Main Block brings everything together. Log infrastructure bootstrap (creatin
 #endregion ==========================================================
 
 # --- Log infrastructure bootstrap ---
-# Must happen before Phase 1 so Invoke-PhaseStart can write to the log.
+# Must happen before any log call. Script-level announcements
+# (SCRIPT_START, ENV_SNAPSHOT, PARAMS) must also happen before
+# Phase 1 — the log's first line should identify the script, not
+# a phase. Call Initialize-Script BEFORE Invoke-PhaseStart, so that
+# cross-language triage tools (which grep for SCRIPT_START as the
+# top-of-log marker) see the expected ordering: SCRIPT_START first,
+# PHASE_START second. Invoke-PhaseStart called before Initialize-Script
+# inverts this and breaks the convention every other language follows.
 $logDir = Split-Path $LogPath -Parent
 if (-not (Test-Path $logDir)) {
     New-Item -ItemType Directory -Path $logDir -Force | Out-Null
@@ -466,12 +536,14 @@ if (-not (Test-Path $logDir)) {
 $script:LogFile = $LogPath
 $script:ScriptTimer = [System.Diagnostics.Stopwatch]::StartNew()
 
+# Script-level announcements BEFORE any phase starts.
+Initialize-Script
+
 try {
     # ================================================================
     # PHASE 1: PREFLIGHT
     # ================================================================
     Invoke-PhaseStart -PhaseName "Preflight"
-    Initialize-Script
     Verify-EntraConnection
     Validate-InputFiles -Path $InputPath
     Invoke-PhaseGate -PhaseName "Preflight" -Summary "Connection: verified | Input: $InputPath"
@@ -499,13 +571,69 @@ try {
     Invoke-PhaseGate -PhaseName "Output" -Summary "Output: $OutputPath"
 
     $script:ScriptTimer.Stop()
-    Write-Log -Level INFO -Message "SCRIPT_COMPLETE: Success | Total Duration: $($script:ScriptTimer.Elapsed.TotalSeconds)s"
+    Write-Log -Level INFO -Message ("SCRIPT_COMPLETE: Success | Total Duration: {0:N3}s" -f $script:ScriptTimer.Elapsed.TotalSeconds)
     exit 0
 
 } catch {
     $script:ScriptTimer.Stop()
-    Write-Log -Level FATAL -Message "SCRIPT_FAILED: Unhandled error | $_ | Total Duration: $($script:ScriptTimer.Elapsed.TotalSeconds)s"
+    Write-Log -Level FATAL -Message ("SCRIPT_FAILED: Unhandled error | {0} | Total Duration: {1:N3}s" -f $_.Exception.Message, $script:ScriptTimer.Elapsed.TotalSeconds)
     Write-Log -Level DEBUG -Message "STACK_TRACE: $($_.ScriptStackTrace)"
     exit 99
 }
 ```
+
+---
+
+## Verification History
+
+Bugs caught by running the patterns in this file end-to-end under `pwsh` on Linux, not just reviewing them.
+
+### Minimal scaffold — Windows-only environment variables
+
+**Caught when:** the minimal scaffold was executed under `pwsh` on Kali Linux.
+
+**The bug:** `$env:USERNAME` and `$env:COMPUTERNAME` are Windows-specific. On Linux and macOS `pwsh`, both variables are unset. The scaffold's `SCRIPT_START` line rendered as `User:  | Host: ` with empty fields — no error, no warning, just silently wrong log output.
+
+**The fix:** Fallback to POSIX-standard alternatives at the top of the main block:
+
+```powershell
+$UserName = if ($env:USERNAME) { $env:USERNAME } else { $env:USER }
+$HostName = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { [System.Net.Dns]::GetHostName() }
+```
+
+`$env:USER` is set on POSIX platforms; `[System.Net.Dns]::GetHostName()` works across all .NET platforms. The `if ... else` cascade uses the Windows variable when present and falls back only when unset.
+
+**Lesson encoded in the file:** Both the minimal scaffold in `minimal_scripts.md` and the full template in this file use the fallback pattern. A future edit that assumes Windows is a single-platform trap.
+
+**Generalizable rule:** When writing PowerShell that targets any environment other than a Windows workstation, assume any `$env:*` variable starting with uppercase may be Windows-only and verify with a cross-platform fallback.
+
+### Full phased template — `Initialize-Script` called after `Invoke-PhaseStart`
+
+**Caught when:** reading the resulting log file from a full-template run.
+
+**The bug:** The Main Block originally called `Invoke-PhaseStart -PhaseName "Preflight"` as the first operation, then called `Initialize-Script` inside Phase 1. This meant the log file started with:
+
+```
+[INFO] PHASE_START: Preflight
+[INFO] SCRIPT_START: script.ps1 | User: ... | Host: ...
+[INFO] ENV_SNAPSHOT: ...
+[INFO] PARAMS: ...
+```
+
+Cross-language triage tools that grep for `SCRIPT_START` as the first line of a log file expected it at log-start, not three lines in. Python and Bash templates both place the `SCRIPT_START` / env snapshot before any `PHASE_START`; PowerShell inverted the convention.
+
+**The fix:** Run log infrastructure bootstrap and `Initialize-Script` **before** Phase 1 starts. The Main Block now bootstraps the log file, timer, and script-level announcements (SCRIPT_START, ENV_SNAPSHOT, PARAMS) first, then enters Phase 1 with `Invoke-PhaseStart`.
+
+**Lesson encoded in the file:** The Main Block in this file carries an inline comment at the bootstrap site explaining the required ordering and why it is non-optional. The comment prevents a future editor from "simplifying" the bootstrap into the first phase.
+
+**Generalizable rule:** Script-level announcements (SCRIPT_START, ENV_SNAPSHOT, PARAMS) always appear at log-top, before any PHASE_START. Cross-language triage assumes this ordering; breaking it silently breaks the tooling.
+
+### Full phased template — `$_` in the SCRIPT_FAILED catch
+
+**Caught when:** format-contract audit comparing unit-level `UNIT_FAILED` output to script-level `SCRIPT_FAILED` output.
+
+**The bug:** The script-level catch logged `$_` directly, which stringifies to the full `ErrorRecord` — verbose position/pipeline ceremony that made `SCRIPT_FAILED` lines noisy. The unit-level catch correctly used `$_.Exception.Message`. Two patterns for the same concept, with the script-level one producing uglier output.
+
+**The fix:** Change the `SCRIPT_FAILED` log to `$($_.Exception.Message)`, matching the unit-level pattern.
+
+**Lesson encoded in the file:** Both unit-level and script-level catches in this file now use `$_.Exception.Message` for the user-visible error text. `$_.ScriptStackTrace` is still used separately in the DEBUG-level `STACK_TRACE` line where the full record is appropriate.

@@ -1,7 +1,7 @@
 # Bash Scripting Patterns
 
 Reference for Ghost's scripting standards applied to Bash.
-Load this file when writing any Bash script.
+Load this file when writing or debugging any Bash script.
 
 ---
 
@@ -13,7 +13,7 @@ Load this file when writing any Bash script.
 # SCRIPT  : script-name.sh
 # PURPOSE : Brief description of what this script does.
 # AUTHOR  : Ghost
-# CREATED : 2025-03-27
+# CREATED : 2026-04-11
 # VERSION : 1.0.0
 #
 # USAGE   : ./script-name.sh --input /path/to/input
@@ -72,6 +72,18 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown argument: $1"; exit 99 ;;
     esac
 done
+
+# Validate STOP_AFTER_PHASE against known phase names.
+# Python and PowerShell get this via argparse choices / ValidateSet; Bash has no
+# equivalent native mechanism, so an explicit post-parse check is required.
+# Without this, a typo like `--stop-after-phase preflght` silently bypasses every
+# gate — the `case` block in invoke_phase_gate never matches, so the script runs
+# to completion regardless of intent.
+case "$STOP_AFTER_PHASE" in
+    none|preflight|collection|processing|output|verification) ;;
+    *) echo "Invalid --stop-after-phase: '$STOP_AFTER_PHASE'. Must be one of: none|preflight|collection|processing|output|verification" >&2
+       exit 99 ;;
+esac
 ```
 
 ---
@@ -127,10 +139,17 @@ log() {
 initialize() {
     SCRIPT_START=$SECONDS
     log INFO "SCRIPT_START: $SCRIPT_NAME | User: $(whoami) | Host: $(hostname)"
-    log INFO "ENV_SNAPSHOT: BashVersion=$BASH_VERSION | OS=$(uname -sr) | WorkingDir=$(pwd) | ScriptPath=${BASH_SOURCE[0]}"
-    log INFO "PARAMS: INPUT_PATH='$INPUT_PATH' | STOP_AFTER_PHASE='$STOP_AFTER_PHASE' | DRY_RUN=$DRY_RUN | DEBUG_MODE=$DEBUG_MODE"
-    [[ "$DRY_RUN"    == "true" ]] && log WARN "DRY-RUN MODE ACTIVE — no writes or system changes will occur"
-    [[ "$DEBUG_MODE" == "true" ]] && log INFO "DEBUG MODE ACTIVE — DEBUG entries will appear on console"
+    log INFO "ENV_SNAPSHOT: bash_version=$BASH_VERSION | os=$(uname -sr) | working_dir=$(pwd) | script_path=${BASH_SOURCE[0]}"
+    log INFO "PARAMS: input_path='$INPUT_PATH' | stop_after_phase='$STOP_AFTER_PHASE' | dry_run=$DRY_RUN | debug_mode=$DEBUG_MODE"
+
+    # Use explicit `if` rather than `[[ ]] && log ...` — under `set -e`, a
+    # trailing `&&` short-circuit whose LHS is false returns exit status 1,
+    # and as the function's last command that propagates to the caller and
+    # kills the script. The `&&` shorthand looks cleaner but is a silent
+    # trap when used as the last statement in a function under strict mode.
+    if [[ "$DRY_RUN"    == "true" ]]; then log WARN "DRY-RUN MODE ACTIVE — no writes or system changes will occur"; fi
+    if [[ "$DEBUG_MODE" == "true" ]]; then log INFO "DEBUG MODE ACTIVE — DEBUG entries will appear on console"; fi
+    return 0
 }
 ```
 
@@ -145,6 +164,12 @@ initialize() {
 # Args    : OPERATION_NAME, MAX_ATTEMPTS (default 3),
 #           DELAY_SECONDS (default 5), COMMAND...
 # Depends : log()
+#
+# IDEMPOTENCY: only use this helper for operations safe to retry —
+# reads, stable-ID updates, deletes, or operations with an idempotency
+# key. A bare POST /charges, POST /send-email, or POST /webhook is NOT
+# safe to retry blindly; a retry that doubles payments or sends duplicate
+# emails is worse than no retry at all. See SKILL.md "Idempotency Rule".
 # ============================================================
 invoke_with_retry() {
     local operation="$1"; shift
@@ -339,6 +364,63 @@ process_records() {
 
 ---
 
+## CONTRACT Block for Cross-File Units
+
+When a function is called from another script — not just a local helper — wrap its unit header with a `<CONTRACT>` block. The block declares the formal integration contract in a grep-stable form. See `reference/integration-tracking.md` for the full Format Contract and Change Impact Protocol.
+
+**Bash substitution policy.** Bash functions do not have typed returns. Following the same policy as the `STACK_TRACE` substitution in `reference/log_vocabulary.md`, the CONTRACT fields adapt:
+
+- **RETURNS** becomes **EXIT_CODES** + **STDOUT** + (optional) **STDERR**. A consumer may depend on any of the three channels; document each one that is part of the contract.
+- **THROWS** becomes part of **EXIT_CODES**. The existing Error Code Reference Block at the top of the script covers script-wide codes; the CONTRACT block's EXIT_CODES field lists the subset that are part of this function's contract specifically.
+- **SIDE_EFFECTS** becomes *more* important in Bash, not less. Functions frequently communicate through environment variables, files, and process state rather than return values. Document every file path written, every env var set, every global modified.
+
+Field keys use **UPPERCASE** in Bash CONTRACT blocks, matching Bash's conventional naming for readonly globals and exit-code constants.
+
+```bash
+# <CONTRACT id="fetch_user_token" version="1" scope="public">
+#   PARAMS (positional):
+#     $1  user_id   required
+#     $2  scope     required (comma-separated)
+#     $3  tenant    optional, defaults to $DEFAULT_TENANT
+#   EXIT_CODES:
+#     0   success, token written to stdout
+#     10  missing required arg
+#     30  authentication failed
+#     50  network error after retries exhausted
+#   STDOUT: single line — "TOKEN|EXPIRES_AT|SCOPES"
+#           TOKEN       bearer token string
+#           EXPIRES_AT  UTC epoch seconds
+#           SCOPES      comma-separated granted scopes
+#   STDERR: diagnostic messages only; never parsed by consumers
+#   SIDE_EFFECTS: writes to $TOKEN_CACHE_FILE if set
+# </CONTRACT>
+# ============================================================
+# UNIT: fetch_user_token
+# Purpose : Obtain a bearer token for the specified user/scope
+# Inputs  : user_id, scope, tenant (positional)
+# Outputs : TOKEN|EXPIRES_AT|SCOPES on stdout (see CONTRACT)
+# Depends : DEFAULT_TENANT (global)
+# ============================================================
+fetch_user_token() {
+    local user_id="$1" scope="$2" tenant="${3:-$DEFAULT_TENANT}"
+    # ...
+}
+```
+
+Consumers that depend on specific stdout fields add a `<USES>` marker immediately above the call site. For Bash, the `fields` attribute names the pipe-delimited stdout fields in the order the CONTRACT declares them:
+
+```bash
+# <USES contract="fetch_user_token" version="1" fields="TOKEN,EXPIRES_AT">
+IFS='|' read -r token expires scopes < <(fetch_user_token "$user" "read")
+if [[ $(date +%s) -lt "$expires" ]]; then
+    curl -H "Authorization: Bearer $token" ...
+fi
+```
+
+The `<USES>` marker is mandatory for consumers of `public` contracts that depend on stdout fields or specific exit codes beyond success/failure; optional but recommended elsewhere.
+
+---
+
 ## invoke_phase_start / invoke_phase_gate Helpers
 
 ```bash
@@ -361,6 +443,19 @@ invoke_phase_start() {
 #           Exit 0 — a gate stop is not a failure.
 # Args    : PHASE_NAME, SUMMARY (optional)
 # Depends : STOP_AFTER_PHASE, PHASE_START, SCRIPT_START, log()
+#
+# PRECISION NOTE: Bash durations here are whole-second, computed from
+# $SECONDS (integer). Python emits 3-decimal-place precision via
+# time.perf_counter(); PowerShell emits 3-decimal via Stopwatch formatted
+# with {0:N3}. If a script legitimately needs sub-second timing (e.g.,
+# timing a fast unit that frequently finishes in <1s), replace the
+# $SECONDS arithmetic with `date +%s.%N` captured at phase start and
+# end, then compute the delta with `bc` or `awk`. Example:
+#   PHASE_START=$(date +%s.%N)
+#   phase_duration=$(awk "BEGIN {printf \"%.3f\", $(date +%s.%N) - $PHASE_START}")
+# The whole-second default is deliberate — sub-second precision adds
+# dependencies (bc/awk) and shell quoting complexity that most scripts
+# don't need. Promote only when the precision actually matters.
 # ============================================================
 invoke_phase_gate() {
     local phase_name="$1"
@@ -489,3 +584,46 @@ trap 'log FATAL "SCRIPT_FAILED: Unhandled error on line $LINENO | Command: $BASH
 
 main "$@"
 ```
+
+---
+
+## Verification History
+
+Bugs caught by running the patterns in this file end-to-end under `bash` with `set -euo pipefail`, not just reviewing them.
+
+### Full phased template — `set -e` + `&&` short-circuit in `initialize()`
+
+**Caught when:** the full phased template was executed end-to-end with default args.
+
+**The bug:** The `initialize()` function originally ended with two lines using the `&&` shorthand for conditional logging:
+
+```bash
+[[ "$DRY_RUN"    == "true" ]] && log WARN "DRY-RUN MODE ACTIVE"
+[[ "$DEBUG_MODE" == "true" ]] && log INFO "DEBUG MODE ACTIVE"
+```
+
+When both `DRY_RUN` and `DEBUG_MODE` were false (the default for a normal run), the second `[[ ... ]]` test returned exit status 1. Under `set -e`, a non-zero exit status from the function's **last command** propagates to the caller — and that caller was `main`, so the script silently terminated right after `initialize()`. No log line, no error message — the script just stopped before Phase 1 started.
+
+**The fix:** Replace the `&&` shorthand with explicit `if` statements, and end the function with `return 0`:
+
+```bash
+if [[ "$DRY_RUN"    == "true" ]]; then log WARN "DRY-RUN MODE ACTIVE — no writes or system changes will occur"; fi
+if [[ "$DEBUG_MODE" == "true" ]]; then log INFO "DEBUG MODE ACTIVE — DEBUG entries will appear on console"; fi
+return 0
+```
+
+The `if` form never returns non-zero from the tail of the function. The explicit `return 0` removes any remaining risk that a future edit to the last line silently re-introduces the trap.
+
+**Lesson encoded in the file:** The `initialize()` function in this file carries an inline comment at the fix site explaining the trap. The comment exists specifically so a future editor who prefers the terser `&&` form reads the explanation before making the edit.
+
+**Generalizable rule:** Under `set -e`, the last command in a function must return zero. `&&` short-circuits and `[[ ... ]]` tests are both traps when used as the final statement. End functions that use conditional logic with either an unconditional `return 0` or an `if/fi` block whose branches all fall through cleanly.
+
+### Extension rule — `STACK_TRACE` has no Bash equivalent
+
+**Caught when:** cross-language grep audit showed zero `STACK_TRACE` lines in Bash logs despite Python and PowerShell emitting them.
+
+**The bug:** not in `bash.md` itself, but in the skill's implicit claim that log prefixes are uniformly emitted. Bash has no call-stack mechanism equivalent to Python's `traceback.format_exc()` or PowerShell's `$_.ScriptStackTrace`. Forcing a `STACK_TRACE` prefix into the Bash ERR trap would be dishonest — the trap already captures `$LINENO` and `$BASH_COMMAND`, which is the best Bash can offer.
+
+**The fix:** Document the asymmetry rather than pretend it away. The Bash ERR trap in this file (top-level trap at script end, plus unit-level subshell traps) is correct. The `log_vocabulary.md` `STACK_TRACE` row now explicitly notes the substitution.
+
+**Lesson encoded in the file:** The ERR trap at the bottom of the Main Block uses `$LINENO` + `$BASH_COMMAND` — this is intentional, not an omission. Don't "fix" it by emitting a fabricated `STACK_TRACE: ...` line.

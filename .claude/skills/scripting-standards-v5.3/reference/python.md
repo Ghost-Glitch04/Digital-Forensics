@@ -1,7 +1,7 @@
 # Python Scripting Patterns
 
 Reference for Ghost's scripting standards applied to Python.
-Load this file when writing any Python script.
+Load this file when writing or debugging any Python script.
 
 ---
 
@@ -13,7 +13,7 @@ Load this file when writing any Python script.
 Script  : script_name.py
 Purpose : Brief description of what this script does.
 Author  : Ghost
-Created : 2025-03-27
+Created : 2026-04-11
 Version : 1.0.0
 
 Usage:
@@ -54,7 +54,14 @@ from pathlib import Path
 
 ## Logger Setup Helper
 
+Normalize level names at import time so cross-language greps like `grep -E "WARN|FATAL"` work across any log this skill produces — Python's defaults are `WARNING`/`CRITICAL`, Bash and PowerShell emit `WARN`/`FATAL`. The two `addLevelName` calls below must run before any logger is constructed; the minimal scaffold in `reference/minimal_scripts.md` places them at module import time for the same reason.
+
 ```python
+# Module-level — run once at import time, before setup_logger is called.
+logging.addLevelName(logging.WARNING, "WARN")
+logging.addLevelName(logging.CRITICAL, "FATAL")
+
+
 # ============================================================
 # HELPER: setup_logger
 # Purpose : Configure logging to stdout and log file.
@@ -62,7 +69,7 @@ from pathlib import Path
 #           by debug_mode flag.
 # Args    : log_path (Path), debug_mode (bool)
 # Returns : logging.Logger
-# Depends : None
+# Depends : Module-level addLevelName calls above
 # ============================================================
 def setup_logger(log_path: Path, debug_mode: bool = False) -> logging.Logger:
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -139,6 +146,12 @@ This ensures input context appears in the log file before any failure, making th
 #           max_attempts (int, default 3), delay_seconds (float, default 5)
 # Returns : Return value of func on success
 # Depends : logger
+#
+# IDEMPOTENCY: only use this helper for operations safe to retry —
+# reads, stable-ID updates, deletes, or operations with an idempotency
+# key. A bare POST /charges, POST /send-email, or POST /webhook is NOT
+# safe to retry blindly; a retry that doubles payments or sends duplicate
+# emails is worse than no retry at all. See SKILL.md "Idempotency Rule".
 # ============================================================
 def invoke_with_retry(operation_name: str, func, logger: logging.Logger,
                       max_attempts: int = 3, delay_seconds: float = 5.0):
@@ -204,12 +217,60 @@ When a unit depends on output from another:
 def process_records(records: list, logger: logging.Logger) -> list:
     with unit_timer(logger, "process_records"):
         if not records:
-            logger.fatal("DEPENDENCY_MISSING: process_records received empty records. Was load_records() skipped or did it fail?")
+            logger.critical("DEPENDENCY_MISSING: process_records received empty records. Was load_records() skipped or did it fail?")
             sys.exit(20)
 
         # ... logic ...
         return processed
 ```
+
+---
+
+## CONTRACT Block for Cross-File Units
+
+When a function is imported from another module — not just a local helper — wrap its unit header with a `<CONTRACT>` block. The block declares the formal integration contract in a grep-stable form. See `reference/integration-tracking.md` for the full Format Contract and Change Impact Protocol.
+
+Field keys use **lowercase_snake_case** in Python CONTRACT blocks, matching PEP 8 conventions. The CONTRACT block is placed above decorators, not between decorators and the function — decorators are part of the function's definition and should sit between the CONTRACT documentation and the function body without interruption.
+
+```python
+# <CONTRACT id="get_user_token" version="1" scope="public">
+#   params:
+#     user_id    [str]        required
+#     scope      [list[str]]  required
+#     tenant_id  [str|None]   optional, default=None
+#   returns: dict
+#     token       [str]        bearer token
+#     expires_at  [datetime]   UTC expiry
+#     scopes      [list[str]]  granted scopes (may differ from requested)
+#   raises: AuthenticationError, NetworkError
+#   side_effects: updates module-level _token_cache
+# </CONTRACT>
+# ============================================================
+# UNIT: get_user_token
+# Purpose : Obtain a bearer token for the specified user/scope
+# Args    : user_id, scope, tenant_id
+# Returns : Dict with keys token, expires_at, scopes
+# Depends : _token_cache (module state), DEFAULT_TENANT (config)
+# ============================================================
+@retry_on_network_error
+def get_user_token(
+    user_id: str,
+    scope: list[str],
+    tenant_id: str | None = None,
+) -> dict:
+    ...
+```
+
+Consumers that read specific fields off the return value add a `<USES>` marker immediately above the call site:
+
+```python
+# <USES contract="get_user_token" version="1" fields="token,expires_at">
+auth = get_user_token(user_id, ["read"])
+if datetime.utcnow() < auth["expires_at"]:
+    headers["Authorization"] = f"Bearer {auth['token']}"
+```
+
+The `<USES>` marker is mandatory for consumers of `public` contracts that read specific dict keys or object attributes off the return; optional but recommended elsewhere. The marker is what makes return-shape changes grep-visible — without it, `auth["token"]` has no syntactic tie back to the contract that produced it.
 
 ---
 
@@ -414,8 +475,9 @@ def main() -> None:
 
     script_start = time.perf_counter()
     logger.info(f"SCRIPT_START: {Path(__file__).name} | User: {os.getenv('USER') or os.getenv('USERNAME')} | Host: {platform.node()}")
-    logger.info(f"ENV_SNAPSHOT: Python={platform.python_version()} | OS={platform.platform()} | WorkingDir={Path.cwd()} | ScriptPath={Path(__file__)}")
-    logger.info(f"PARAMS: {vars(args)}")
+    logger.info(f"ENV_SNAPSHOT: python={platform.python_version()} | os={platform.platform()} | working_dir={Path.cwd()} | script_path={Path(__file__)}")
+    params_str = " | ".join(f"{k}={v}" for k, v in vars(args).items())
+    logger.info(f"PARAMS: {params_str}")
 
     if args.dry_run: logger.warning("DRY-RUN MODE ACTIVE — no writes or API mutations will occur")
     if args.debug:   logger.info("DEBUG MODE ACTIVE — DEBUG entries will appear on console")
@@ -458,10 +520,10 @@ def main() -> None:
         sys.exit(0)
 
     except SystemExit:
-        raise
+        raise  # Allow deliberate sys.exit() calls through; only catch unexpected exceptions.
     except Exception as exc:
         total = time.perf_counter() - script_start
-        logger.fatal(f"SCRIPT_FAILED: Unhandled error | {exc} | Total Duration: {total:.3f}s")
+        logger.critical(f"SCRIPT_FAILED: Unhandled error | {exc} | Total Duration: {total:.3f}s")
         logger.debug(f"STACK_TRACE:\n{traceback.format_exc()}")
         sys.exit(99)
 
@@ -469,3 +531,36 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+
+---
+
+## Verification History
+
+Bugs caught by running the patterns in this file end-to-end, not just reviewing them.
+
+### Minimal scaffold — cross-language log level name mismatch
+
+**Caught when:** the minimal scaffold in `minimal_scripts.md` was executed against real Python.
+
+**The bug:** Python's `logging` module ships `WARNING` and `CRITICAL` as default level names; Bash and PowerShell emit `WARN` and `FATAL`. A `grep -E "WARN|FATAL" *.log` across a mixed-language run silently missed every Python warning and every Python fatal.
+
+**The fix:** Two `logging.addLevelName()` calls at module import time, before any logger is constructed:
+
+```python
+logging.addLevelName(logging.WARNING, "WARN")
+logging.addLevelName(logging.CRITICAL, "FATAL")
+```
+
+This renames the levels for all emit paths — `logger.warning(...)` now writes `[WARN]` in the log file, and `logger.critical(...)` writes `[FATAL]`. Both helpers (`setup_logger` in this file and the minimal-scaffold equivalent) rely on the module-level rename, so the rename must run once before any logger is built. Both scaffolds place the calls at the top of the module.
+
+**Lesson encoded in the file:** See the preamble to `setup_logger` in the "Logger Setup Helper" section — it explicitly documents the rename requirement and why it is non-optional. Removing the two lines will silently break cross-language grep triage.
+
+### Full phased template — `logger.fatal()` vs `logger.critical()`
+
+**Caught when:** format-contract audit of the full-template verification output.
+
+**The bug:** Python's `Logger.fatal()` method is a pass-through to `.critical()` — it works, but the method's own docstring reads `"Don't use this method, use critical() instead."` The full template initially used `logger.fatal(...)` for the `SCRIPT_FAILED` and `DEPENDENCY_MISSING` lines. Behavior was correct; the idiom was not.
+
+**The fix:** Replaced both calls with `logger.critical(...)`. With `addLevelName(CRITICAL, "FATAL")` already in place, the emitted log label is still `[FATAL]` — only the method call changed.
+
+**Lesson encoded in the file:** The full-template `SCRIPT_FAILED` and `DEPENDENCY_MISSING` lines in this file now use `logger.critical(...)`. A future edit that reverts to `logger.fatal(...)` will work but is inconsistent with Python-core guidance.
