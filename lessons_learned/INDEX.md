@@ -15,7 +15,7 @@ frontloaded), source pointer to phase file, and type classification.
 
 | File | Rules | Topics / keywords |
 |---|---|---|
-| [ai/powershell.md](ai/powershell.md) | 6 | powershell, string-escape, byte-scan, performance, parse-check, file-encoding, bom, dotnet-version, ps51 |
+| [ai/powershell.md](ai/powershell.md) | 7 (1 superseded) | powershell, string-escape, byte-scan, performance, parse-check, file-encoding, ascii, bom, dotnet-version, ps51, redistribution |
 | [ai/forensic_triage.md](ai/forensic_triage.md) | 4 | false-positive, keyword-list, immutability, copy-then-analyze, fixture-pairing, encrypted-package, silent-wrong-answer |
 | [ai/process.md](ai/process.md) | 5 | prove-first, plan-mode, askuserquestion, benchmark-first, switch-design, cli-ergonomics, retry, call-site-audit |
 
@@ -65,7 +65,8 @@ Rules and insights from the most recent reflections. New entries start here.
 | skill-drift | Verify a skill's referenced files exist before invoking it on real work — dead pointers cost ~10 min each | phase01:9 | insight |
 | switch-design, cli-ergonomics | Condition artifact-preservation switches on the verdict that makes preservation useful, not on orthogonal always/never flags | phase01:11 | rule |
 | skill-drift | lessons-learned_V3_5 shipped with 4 missing reference files; gap resolved mid-session via user upload | phase01:12 | insight |
-| powershell, file-encoding, bom, ps51 | `.ps1` files with non-ASCII must be UTF-8-with-BOM; PS 5.1 reads BOM-less files as Windows-1252 and corrupts multi-byte chars | phase01:13 | rule |
+| powershell, file-encoding, bom, ps51 | SUPERSEDED by phase01:15 rule - BOM fix solves local author case but breaks under redistribution; strict-ASCII is durable fix | phase01:13 | rule |
+| powershell, file-encoding, ascii, ps51, redistribution | Strict-ASCII .ps1 source is durable cross-runtime; BOM alone is fragile because copy tools strip it silently | phase01:15 | rule |
 | powershell, dotnet-version, ps51 | `[Encoding]::Latin1` is .NET Core/5+ only; use `::GetEncoding(28591)` for PS 5.1 / .NET Framework 4.x cross-runtime compat | phase01:13 | rule |
 | retry, idempotency, call-site-audit | When adding retry to a resource, grep every call-site that touches the same resource — wrapping one site is a partial fix | phase01:14 | rule |
 | false-positive, encrypted-package, cfbf, silent-wrong-answer | Check for EncryptedPackage / EncryptionInfo UTF-16LE stream names before claiming CLEAN on CFBF input — encrypted OOXML routes to CFBF path | phase01:14 | rule |

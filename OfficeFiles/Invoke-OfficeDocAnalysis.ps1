@@ -1,16 +1,16 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    Office Document Forensic Analysis — Static, Read-Only Multi-Format Inspector
+    Office Document Forensic Analysis - Static, Read-Only Multi-Format Inspector
 
 .DESCRIPTION
     Performs static (non-executing) forensic analysis of Microsoft Office
     documents and adjacent formats to help triage EDR false positives.
 
     Supported formats (routed by magic bytes, not extension):
-      * OOXML  — .docx, .xlsx, .pptx, .xml and macro-enabled variants
-      * CFBF   — legacy binary .doc, .xls, .ppt (incl. XLM/Excel 4.0 macros)
-      * RTF    — .rtf and renamed .doc covers; detects Equation Editor and
+      * OOXML  - .docx, .xlsx, .pptx, .xml and macro-enabled variants
+      * CFBF   - legacy binary .doc, .xls, .ppt (incl. XLM/Excel 4.0 macros)
+      * RTF    - .rtf and renamed .doc covers; detects Equation Editor and
                  embedded executables in \objdata blobs
 
     Safety contract (invariant):
@@ -18,7 +18,7 @@
       source is copied once to $env:TEMP\OfficeAnalysis_<guid>\ under
       SHA-256 re-verification; every downstream read operates on the copy.
       At script end, the source is re-hashed and compared against the
-      hash captured at the start — a mismatch is FATAL and indicates the
+      hash captured at the start - a mismatch is FATAL and indicates the
       script's contract was violated (external interference).
 
     Outputs:
@@ -70,8 +70,21 @@
 
 .NOTES
     Author  : Ghost-Glitch04
-    Version : 2.0.0
+    Version : 2.0.1
     Date    : 2026-04-24
+
+    Changelog:
+      2.0.1 - ASCII-hardened source (removed all non-ASCII characters
+              from comments and log strings). Script is now parse-safe
+              on PowerShell 5.1 even when copies lose the UTF-8 BOM.
+              Previously, 50+ em-dashes required BOM preservation
+              through every copy operation; a single BOM-stripping
+              editor or tool broke PS 5.1 parsing.
+      2.0.0 - Full rewrite from v1 to scripting-standards-v5.3 template.
+              Added RTF format path, template-injection detection, XLM
+              macros, encrypted-package detection, retry wrapper on
+              source reads, source-immutability SHA-256 round-trip
+              assertion in log.
 
     Exit codes:
         0  = Success / clean phase-gate stop
@@ -127,7 +140,7 @@ $ErrorActionPreference = 'Stop'
 # ============================================================
 # CONFIGURATION
 # ============================================================
-$Script:Version       = '2.0.0'
+$Script:Version       = '2.0.1'
 $Script:ScriptName    = 'Invoke-OfficeDocAnalysis'
 $Script:LogFile       = $null   # set in Main bootstrap
 $Script:WorkingDir    = $null   # set by New-Workspace unit
@@ -138,7 +151,7 @@ $Script:Findings      = $null   # List[hashtable], initialized in Analysis
 $Script:SourceHashSha256Start = $null   # captured in Preflight, re-checked at script end
 $Script:SourceLastWriteStart  = $null
 
-# Suspicious keyword list — VBA patterns, LOLBins, encoding APIs.
+# Suspicious keyword list - VBA patterns, LOLBins, encoding APIs.
 # Kept conservative: each entry is a legitimate red flag in an Office doc.
 #
 # URL schemes (http://, https://, ftp://) are NOT in this list. Every clean
@@ -157,20 +170,20 @@ $Script:SuspiciousKeywords = @(
     'WScript.Shell','InternetExplorer.Application'
 )
 
-# URL scheme patterns — scanned with attribute context for OOXML (Target=,
+# URL scheme patterns - scanned with attribute context for OOXML (Target=,
 # src=) and plainly for CFBF/RTF (where structural context is absent).
 $Script:UrlSchemes = @('http://','https://','ftp://','file://')
 
 $Script:SuspiciousExtensions = @('.exe','.dll','.ps1','.bat','.cmd','.scr','.vbs','.js','.hta','.msi')
 
-# Magic byte signatures → format name. 4-byte sigs for OOXML/CFBF; RTF needs 5.
+# Magic byte signatures -> format name. 4-byte sigs for OOXML/CFBF; RTF needs 5.
 $Script:MagicBytes = @{
     '50-4B-03-04'          = 'OOXML'   # ZIP-based
     'D0-CF-11-E0'          = 'CFBF'    # Compound Binary
     '7B-5C-72-74-66-31'    = 'RTF'     # {\rtf1  (6-byte check for specificity)
 }
 
-# Auto-execution trigger names — CFBF path. Scanned as UTF-16LE AND ASCII
+# Auto-execution trigger names - CFBF path. Scanned as UTF-16LE AND ASCII
 # bytes because VBA module names are stored UTF-16LE in CFBF streams, but
 # XLM 4.0 macro names and some legacy embeds use ANSI/ASCII.
 $Script:AutoExecTriggers = @(
@@ -178,10 +191,10 @@ $Script:AutoExecTriggers = @(
     'Workbook_Open','Auto_Open','Auto_Close','DocumentOpen'
 )
 
-# Encrypted-package stream names — password-protected OOXML is wrapped in a
+# Encrypted-package stream names - password-protected OOXML is wrapped in a
 # CFBF container with an EncryptedPackage stream; legacy CFBF (.doc/.xls)
 # password protection uses the same or similar stream names. Presence means
-# content analysis is not possible without the password — verdict floor is
+# content analysis is not possible without the password - verdict floor is
 # SUSPICIOUS and scan short-circuits with an escalation note.
 $Script:EncryptedStreamNames = @('EncryptedPackage','EncryptionInfo','DataSpaces')
 
@@ -235,7 +248,7 @@ function Write-Log {
 # Depends : Write-Log
 #
 # IDEMPOTENCY: only safe for operations that produce identical outcomes
-# on retry — reads, stable-path file copies, deletes, operations with
+# on retry - reads, stable-path file copies, deletes, operations with
 # idempotency keys. DO NOT wrap POST-style side-effecting calls.
 # Source: scripting-standards-v5.3 reference/powershell.md "Invoke-WithRetry".
 #endregion ==========================================================
@@ -291,7 +304,7 @@ function Invoke-PhaseGate {
     if ($StopAfterPhase -eq $PhaseName) {
         $Script:ScriptTimer.Stop()
         Write-Log ("PHASE_GATE: Stopping cleanly after phase '$PhaseName' | Total Duration: {0:N3}s" -f $Script:ScriptTimer.Elapsed.TotalSeconds)
-        # Final safety check even on gate stop — the immutability contract applies
+        # Final safety check even on gate stop - the immutability contract applies
         Assert-SourceUnchanged
         exit 0
     }
@@ -310,8 +323,8 @@ function Initialize-Script {
     Write-Log "ENV_SNAPSHOT: ps_version=$($PSVersionTable.PSVersion) | os=$([System.Environment]::OSVersion.VersionString) | working_dir=$(Get-Location) | script_path=$PSCommandPath"
     Write-Log "PARAMS: file_path='$FilePath' | output_dir='$OutputDir' | stop_after_phase='$StopAfterPhase' | output_format='$OutputFormat' | keep_temp_on_alert=$KeepTempOnAlert | dry_run=$DryRun | debug_mode=$DebugMode"
 
-    if ($DryRun)    { Write-Log 'DRY-RUN MODE ACTIVE — findings JSON will not be written' 'WARN' }
-    if ($DebugMode) { Write-Log 'DEBUG MODE ACTIVE — DEBUG entries appear on console' }
+    if ($DryRun)    { Write-Log 'DRY-RUN MODE ACTIVE - findings JSON will not be written' 'WARN' }
+    if ($DebugMode) { Write-Log 'DEBUG MODE ACTIVE - DEBUG entries appear on console' }
 }
 
 #region ============================================================
@@ -360,7 +373,7 @@ function New-TempWorkspace {
 # HELPER: Copy-SourceSafely
 # Purpose : Copy source file to workspace and verify SHA-256 integrity.
 #           The copy is what every downstream unit reads. If the hash
-#           mismatches, the copy failed silently — exit 40 rather than
+#           mismatches, the copy failed silently - exit 40 rather than
 #           proceed on a potentially-mangled sample.
 # Inputs  : -Source (string path), -Workspace (directory), -SourceHash (SHA-256)
 # Outputs : Returns full path to the copy
@@ -374,7 +387,7 @@ function Copy-SourceSafely {
     $sourceItem = Get-Item -LiteralPath $Source
     $destPath = Join-Path $Workspace ("source{0}" -f $sourceItem.Extension)
 
-    # Wrap copy in retry — transient lock from Word/Excel still open on the
+    # Wrap copy in retry - transient lock from Word/Excel still open on the
     # flagged file is the common case. Safe to retry: copy produces byte-
     # identical output at $destPath on every successful attempt; partial
     # state from an interrupted attempt is overwritten by the next (-Force).
@@ -398,7 +411,7 @@ function Copy-SourceSafely {
 #           a byte-array haystack. Uses [Array]::IndexOf to jump to
 #           candidate first-byte positions, then verifies remaining bytes
 #           in a tight PS loop. ~68x faster than a pure-PS scan on 5MB
-#           buffers — proven on 2026-04-24 during rewrite verification.
+#           buffers - proven on 2026-04-24 during rewrite verification.
 #
 #           Sufficient for files into the hundreds of MB. CFBF Office
 #           files are typically under 10MB; MSIs sometimes exceed 100MB.
@@ -435,7 +448,7 @@ function Find-BytePattern {
 # Purpose : Re-hash the ORIGINAL source file and compare against the
 #           hash captured at script start. This proves the immutability
 #           contract from the log. Called at script end AND at gate stops.
-# Exits   : 99 on mismatch (FATAL — script's contract has been violated).
+# Exits   : 99 on mismatch (FATAL - script's contract has been violated).
 #           LastWriteTime drift alone is WARN, not FATAL (AV scans etc.
 #           may touch the timestamp without altering bytes).
 #endregion ==========================================================
@@ -447,7 +460,7 @@ function Assert-SourceUnchanged {
             Write-Log "SOURCE_MUTATED: SHA-256 mismatch | start=$Script:SourceHashSha256Start | end=$hashNow | ExitCode=99" 'FATAL'
             exit 99
         }
-        Write-Log "VERIFY_OK: Source file immutability confirmed — SHA-256 unchanged from script start to end ($hashNow)"
+        Write-Log "VERIFY_OK: Source file immutability confirmed - SHA-256 unchanged from script start to end ($hashNow)"
 
         $writeNow = (Get-Item -LiteralPath $FilePath).LastWriteTimeUtc
         if ($writeNow -ne $Script:SourceLastWriteStart) {
@@ -492,7 +505,7 @@ function Invoke-Preflight {
     Write-Log 'UNIT_START: Compute-SourceHashes'
     try {
         # Wrap in retry: source file may be transiently locked (open in Word
-        # etc.). Hashing is pure-read and idempotent — safe to retry.
+        # etc.). Hashing is pure-read and idempotent - safe to retry.
         $Script:Hashes = Invoke-WithRetry -OperationName "Compute source hashes" -MaxAttempts 3 -DelaySeconds 2 -ScriptBlock {
             @{
                 SHA256 = (Get-FileHash -LiteralPath $FilePath -Algorithm SHA256 -ErrorAction Stop).Hash
@@ -557,7 +570,7 @@ function Invoke-Preflight {
         elseif ($Script:MagicBytes.ContainsKey($sig4))  { $Script:FileFormat = $Script:MagicBytes[$sig4]; $Script:HexSignature = $sig4 }
 
         if (-not $Script:FileFormat) {
-            Write-Log "UNIT_FAILED: Detect-FileFormat | Unrecognized magic bytes: '$sig4' / '$sig6' — not a supported Office format | ExitCode=11" 'FATAL'
+            Write-Log "UNIT_FAILED: Detect-FileFormat | Unrecognized magic bytes: '$sig4' / '$sig6' - not a supported Office format | ExitCode=11" 'FATAL'
             exit 11
         }
         Write-Log "VERIFY_OK: Format detected as '$Script:FileFormat' | Signature='$Script:HexSignature'"
@@ -565,10 +578,10 @@ function Invoke-Preflight {
         $expectedExtensions = @{
             OOXML = @('.docx','.xlsx','.pptx','.xml','.xlsm','.docm','.pptm','.dotx','.dotm','.xltx','.xltm','.potx','.potm','.zip')
             CFBF  = @('.doc','.xls','.ppt','.dot','.xlt','.pot','.msi','.msg')
-            RTF   = @('.rtf','.doc')   # .doc RTF covers are a classic spoof — analyst should be alerted elsewhere
+            RTF   = @('.rtf','.doc')   # .doc RTF covers are a classic spoof - analyst should be alerted elsewhere
         }
         if ($Script:FileExtension -notin $expectedExtensions[$Script:FileFormat]) {
-            Write-Log "VERIFY_WARN: Extension '$Script:FileExtension' does not match detected format '$Script:FileFormat' — possible extension spoofing" 'WARN'
+            Write-Log "VERIFY_WARN: Extension '$Script:FileExtension' does not match detected format '$Script:FileFormat' - possible extension spoofing" 'WARN'
         }
         Write-Log ("UNIT_END: Detect-FileFormat | Format='$Script:FileFormat' | Duration: {0:N3}s" -f $unitTimer.Elapsed.TotalSeconds)
     }
@@ -602,7 +615,7 @@ function Invoke-Preflight {
 
                     if ($ct -match 'macroEnabled') {
                         $Script:OOXMLMacroEnabled = $true
-                        Write-Log "VERIFY_WARN: Macro-enabled content type declared in [Content_Types].xml — VBA expected in this file" 'WARN'
+                        Write-Log "VERIFY_WARN: Macro-enabled content type declared in [Content_Types].xml - VBA expected in this file" 'WARN'
                     }
                 }
             } finally { $zip.Dispose() }
@@ -655,7 +668,7 @@ function Invoke-Extraction {
         Write-Log 'UNIT_START: Extract-CFBFBinary'
         try {
             $Script:RawBytes = [System.IO.File]::ReadAllBytes($Script:WorkingPath)
-            # Latin-1 projection preserves all byte values 1:1 as chars — safe
+            # Latin-1 projection preserves all byte values 1:1 as chars - safe
             # for regex scans that don't span UTF-16 null-byte boundaries.
             # [Encoding]::Latin1 static is .NET Core / 5+ only; use code page 28591
             # (ISO-8859-1) for cross-runtime compatibility with PowerShell 5.1 /
@@ -725,7 +738,7 @@ function Invoke-Analysis {
 
     # Load early-warning signal from Preflight into findings if set.
     if ($Script:FileFormat -eq 'OOXML' -and $Script:OOXMLMacroEnabled) {
-        Add-Finding 'SUSPICIOUS' 'MacroEnabledContentType' "Content type declares macro-enabled document — VBA expected" '[Content_Types].xml'
+        Add-Finding 'SUSPICIOUS' 'MacroEnabledContentType' "Content type declares macro-enabled document - VBA expected" '[Content_Types].xml'
     }
 
     switch ($Script:FileFormat) {
@@ -734,10 +747,10 @@ function Invoke-Analysis {
         'RTF'   { Invoke-RTFAnalysis }
     }
 
-    # PARTIAL_SUCCESS classification — analysis units that encountered
+    # PARTIAL_SUCCESS classification - analysis units that encountered
     # per-file read failures but continued.
     if ($Script:RecordFailures -gt 0) {
-        Write-Log "PARTIAL_SUCCESS: Analysis completed with $Script:RecordFailures per-file read failure(s) — see RECORD_FAILED entries" 'WARN'
+        Write-Log "PARTIAL_SUCCESS: Analysis completed with $Script:RecordFailures per-file read failure(s) - see RECORD_FAILED entries" 'WARN'
     } else {
         Write-Log 'FULL_SUCCESS: Analysis completed with no per-file read failures'
     }
@@ -800,7 +813,7 @@ function Invoke-OOXMLAnalysis {
             try {
                 $content = Get-Content -LiteralPath $xmlFile.FullName -Raw -Encoding UTF8
 
-                # External relationships (attribute order-independent regex — v1 bug fix)
+                # External relationships (attribute order-independent regex - v1 bug fix)
                 $extMatches = [regex]::Matches($content,
                     '(?:TargetMode="External"[^>]*Target="([^"]+)")|(?:Target="([^"]+)"[^>]*TargetMode="External")')
                 foreach ($m in $extMatches) {
@@ -813,14 +826,14 @@ function Invoke-OOXMLAnalysis {
                     Add-Finding 'SUSPICIOUS' 'EmbeddedObject' 'OLE/embedded reference present' $relPath
                 }
 
-                # Keyword scan — remove v1's `break` so multiple keywords are recorded.
+                # Keyword scan - remove v1's `break` so multiple keywords are recorded.
                 foreach ($kw in $Script:SuspiciousKeywords) {
                     if ($content -match [regex]::Escape($kw)) {
                         Add-Finding 'SUSPICIOUS' 'SuspiciousKeyword' "Keyword '$kw' found" $relPath
                     }
                 }
 
-                # URL schemes — only inside value attributes of .rels files
+                # URL schemes - only inside value attributes of .rels files
                 # (Target=, src=, Source=) or inside document.xml content nodes.
                 # xmlns= namespace declarations and schema URIs are excluded.
                 if ($relPath -like '*.rels' -or $relPath -like '*word*\document.xml' -or $relPath -like '*xl*\sharedStrings.xml') {
@@ -890,13 +903,13 @@ function Invoke-CFBFAnalysis {
 
     #region UNIT: Detect-EncryptedPackage --------------------------
     # Runs FIRST in CFBF analysis. Password-protected OOXML is wrapped in
-    # a CFBF outer container with an 'EncryptedPackage' stream — so when
+    # a CFBF outer container with an 'EncryptedPackage' stream - so when
     # the user points this script at a password-protected .docx, magic
     # bytes route it here (D0-CF-11-E0), not to the OOXML path. Legacy
     # CFBF (.doc/.xls) password protection uses the same stream name.
     #
     # If detected, we emit a SUSPICIOUS finding with an escalation note.
-    # Downstream keyword/OLE-stream scans still run — they won't fire
+    # Downstream keyword/OLE-stream scans still run - they won't fire
     # meaningful findings on encrypted ciphertext, but their zero-result
     # output is itself diagnostic (confirms the encryption hypothesis).
     #endregion
@@ -912,10 +925,10 @@ function Invoke-CFBFAnalysis {
             }
         }
         if ($encHits.Count -gt 0) {
-            $detail = "Password-protected or encrypted document — static content analysis of body is not possible without the password. Detected streams: " + (($encHits | ForEach-Object { $_.Name }) -join ', ')
+            $detail = "Password-protected or encrypted document - static content analysis of body is not possible without the password. Detected streams: " + (($encHits | ForEach-Object { $_.Name }) -join ', ')
             $firstOffset = "offset=0x{0:X}" -f $encHits[0].Offset
             Add-Finding 'SUSPICIOUS' 'EncryptedPackage' $detail $firstOffset
-            Write-Log 'VERIFY_WARN: Encrypted package detected — body cannot be scanned statically; escalate with password to olevba/MSOFFCRYPTO-tool' 'WARN'
+            Write-Log 'VERIFY_WARN: Encrypted package detected - body cannot be scanned statically; escalate with password to olevba/MSOFFCRYPTO-tool' 'WARN'
         } else {
             Write-Log 'VERIFY_OK: No encrypted-package indicators detected'
         }
@@ -938,7 +951,7 @@ function Invoke-CFBFAnalysis {
                 $hits++
             }
         }
-        # URL schemes inside CFBF binary content — VBA source strings often
+        # URL schemes inside CFBF binary content - VBA source strings often
         # contain these. CFBF lacks the xmlns namespace noise problem that
         # OOXML has, so direct substring match is reliable here.
         foreach ($scheme in $Script:UrlSchemes) {
@@ -948,7 +961,7 @@ function Invoke-CFBFAnalysis {
             }
         }
         if ($hits -gt 0) {
-            Write-Log "VERIFY_WARN: $hits suspicious keyword(s) matched — run olevba for full macro decode if verdict is not CLEAN" 'WARN'
+            Write-Log "VERIFY_WARN: $hits suspicious keyword(s) matched - run olevba for full macro decode if verdict is not CLEAN" 'WARN'
         } else {
             Write-Log 'VERIFY_OK: No plaintext suspicious keywords detected'
         }
@@ -967,13 +980,13 @@ function Invoke-CFBFAnalysis {
         foreach ($trigger in $Script:AutoExecTriggers) {
             # ASCII check (plaintext occurrences)
             if ($Script:RawContent -match [regex]::Escape($trigger)) {
-                Add-Finding 'ALERT' 'AutoExec' "Auto-execution trigger '$trigger' (ASCII) — macro likely fires on document open"
+                Add-Finding 'ALERT' 'AutoExec' "Auto-execution trigger '$trigger' (ASCII) - macro likely fires on document open"
             }
-            # UTF-16LE check — VBA module/procedure names in CFBF streams
+            # UTF-16LE check - VBA module/procedure names in CFBF streams
             $needle = [System.Text.Encoding]::Unicode.GetBytes($trigger)
             $offset = Find-BytePattern -Haystack $Script:RawBytes -Needle $needle
             if ($offset -ge 0) {
-                Add-Finding 'ALERT' 'AutoExec' "Auto-execution trigger '$trigger' (UTF-16LE) — VBA module auto-exec procedure" ("offset=0x{0:X}" -f $offset)
+                Add-Finding 'ALERT' 'AutoExec' "Auto-execution trigger '$trigger' (UTF-16LE) - VBA module auto-exec procedure" ("offset=0x{0:X}" -f $offset)
             }
         }
         Write-Log ("UNIT_END: Analyze-CFBFAutoExec | Duration: {0:N3}s" -f $unitTimer.Elapsed.TotalSeconds)
@@ -985,7 +998,7 @@ function Invoke-CFBFAnalysis {
     }
 
     #region UNIT: Analyze-CFBFOLEStreams (CENTERPIECE CORRECTNESS FIX)
-    # v1 used literal "\x00" in a PowerShell double-quoted string — those are
+    # v1 used literal "\x00" in a PowerShell double-quoted string - those are
     # five-character strings, not null bytes. This unit replaces that regex
     # with proper UTF-16LE byte-array searches via Find-BytePattern.
     #endregion
@@ -1008,11 +1021,11 @@ function Invoke-CFBFAnalysis {
             }
         }
 
-        # CVE-2017-11882 / CVE-2018-0802 callout — any Equation Editor embed
+        # CVE-2017-11882 / CVE-2018-0802 callout - any Equation Editor embed
         # in a modern document is high-risk regardless of content.
         $eqOffset = Find-BytePattern -Haystack $Script:RawBytes -Needle ([System.Text.Encoding]::ASCII.GetBytes('Equation Native'))
         if ($eqOffset -ge 0) {
-            Add-Finding 'ALERT' 'EquationEditor' 'Equation Editor object present — high risk for CVE-2017-11882 / CVE-2018-0802' ("offset=0x{0:X}" -f $eqOffset)
+            Add-Finding 'ALERT' 'EquationEditor' 'Equation Editor object present - high risk for CVE-2017-11882 / CVE-2018-0802' ("offset=0x{0:X}" -f $eqOffset)
         }
 
         Write-Log ("UNIT_END: Analyze-CFBFOLEStreams | Duration: {0:N3}s" -f $unitTimer.Elapsed.TotalSeconds)
@@ -1025,7 +1038,7 @@ function Invoke-CFBFAnalysis {
 
     #region UNIT: Analyze-XLMMacros --------------------------------
     # XLM / Excel 4.0 macros are best-effort detection in static analysis.
-    # They don't live in vbaProject.bin — they're hidden in worksheet
+    # They don't live in vbaProject.bin - they're hidden in worksheet
     # cells or a defined name like 'Auto_Open' pointing at a 'Macro1' sheet.
     # Hits here are SUSPICIOUS (not ALERT) plus an escalation note.
     #endregion
@@ -1055,7 +1068,7 @@ function Invoke-CFBFAnalysis {
             }
         }
         if ($xlmFound) {
-            Write-Log 'VERIFY_WARN: XLM/Excel 4.0 macro indicators present — escalate with XLMMacroDeobfuscator for full decode' 'WARN'
+            Write-Log 'VERIFY_WARN: XLM/Excel 4.0 macro indicators present - escalate with XLMMacroDeobfuscator for full decode' 'WARN'
         } else {
             Write-Log 'VERIFY_OK: No XLM macro indicators detected'
         }
@@ -1081,8 +1094,8 @@ function Invoke-RTFAnalysis {
 
         if ($objCount -gt 0)       { Add-Finding 'SUSPICIOUS' 'RTFObject' "$objCount \object control word(s)" }
         if ($objDataCount -gt 0)   { Add-Finding 'SUSPICIOUS' 'RTFObject' "$objDataCount \objdata block(s) present" }
-        if ($objUpdateCount -gt 0) { Add-Finding 'ALERT' 'RTFObject' "$objUpdateCount \objupdate control word(s) — forces OLE refresh on open" }
-        if ($objClassCount -gt 0)  { Add-Finding 'SUSPICIOUS' 'RTFObject' "$objClassCount \objclass block(s) — examine target CLSID" }
+        if ($objUpdateCount -gt 0) { Add-Finding 'ALERT' 'RTFObject' "$objUpdateCount \objupdate control word(s) - forces OLE refresh on open" }
+        if ($objClassCount -gt 0)  { Add-Finding 'SUSPICIOUS' 'RTFObject' "$objClassCount \objclass block(s) - examine target CLSID" }
 
         Write-Log ("UNIT_END: Analyze-RTFObjects | object={0} objdata={1} objupdate={2} objclass={3} | Duration: {4:N3}s" -f $objCount, $objDataCount, $objUpdateCount, $objClassCount, $unitTimer.Elapsed.TotalSeconds)
     }
@@ -1100,12 +1113,12 @@ function Invoke-RTFAnalysis {
         # (hex-decoded) inside \objdata. Check both surfaces.
         $eqRe = 'Equation\.[23]'
         if ($Script:RtfContent -match $eqRe) {
-            Add-Finding 'ALERT' 'EquationEditor' 'Equation Editor ProgID in RTF text — high risk for CVE-2017-11882 / CVE-2018-0802'
+            Add-Finding 'ALERT' 'EquationEditor' 'Equation Editor ProgID in RTF text - high risk for CVE-2017-11882 / CVE-2018-0802'
         }
         if ($Script:RtfDecodedBytes) {
             $asciiView = [System.Text.Encoding]::ASCII.GetString($Script:RtfDecodedBytes)
             if ($asciiView -match $eqRe -or $asciiView -match 'Equation Native') {
-                Add-Finding 'ALERT' 'EquationEditor' 'Equation Editor marker in decoded \objdata — high risk for CVE-2017-11882 / CVE-2018-0802'
+                Add-Finding 'ALERT' 'EquationEditor' 'Equation Editor marker in decoded \objdata - high risk for CVE-2017-11882 / CVE-2018-0802'
             }
         }
         Write-Log ("UNIT_END: Analyze-RTFEquationEditor | Duration: {0:N3}s" -f $unitTimer.Elapsed.TotalSeconds)
@@ -1123,7 +1136,7 @@ function Invoke-RTFAnalysis {
         if ($Script:RtfDecodedBytes) {
             $mzOffset = Find-BytePattern -Haystack $Script:RtfDecodedBytes -Needle ([byte[]]@(0x4D, 0x5A))
             if ($mzOffset -ge 0) {
-                Add-Finding 'ALERT' 'EmbeddedExecutable' 'MZ header (PE file) in decoded \objdata — embedded executable payload' ("objdata_offset=0x{0:X}" -f $mzOffset)
+                Add-Finding 'ALERT' 'EmbeddedExecutable' 'MZ header (PE file) in decoded \objdata - embedded executable payload' ("objdata_offset=0x{0:X}" -f $mzOffset)
             }
         }
         Write-Log ("UNIT_END: Analyze-RTFEmbeddedExe | Duration: {0:N3}s" -f $unitTimer.Elapsed.TotalSeconds)
@@ -1164,7 +1177,7 @@ function Invoke-Report {
         $header = @"
 
 $separator
-  OFFICE DOCUMENT FORENSIC ANALYSIS — FINDINGS REPORT
+  OFFICE DOCUMENT FORENSIC ANALYSIS - FINDINGS REPORT
 $separator
   File    : $($Script:SourceFileItem.FullName)
   Size    : $($Script:SourceFileItem.Length) bytes
@@ -1210,12 +1223,12 @@ $separator
             Write-Host '  ESCALATION NOTE: CFBF findings present.' -ForegroundColor Magenta
             Write-Host '  Static scanning cannot decode obfuscated / compressed VBA.' -ForegroundColor Magenta
             Write-Host "  Recommended: run 'olevba' (oletools) on source for full macro extraction." -ForegroundColor Magenta
-            Write-Log 'ESCALATION: CFBF findings present — olevba recommended for full decode' 'WARN'
+            Write-Log 'ESCALATION: CFBF findings present - olevba recommended for full decode' 'WARN'
         }
         if ($Script:FileFormat -eq 'RTF' -and $alerts.Count -gt 0) {
             Write-Host '  ESCALATION NOTE: RTF with ALERT-level findings.' -ForegroundColor Magenta
             Write-Host "  Recommended: run 'rtfobj' (oletools) on source for full OLE-object extraction." -ForegroundColor Magenta
-            Write-Log 'ESCALATION: RTF alerts present — rtfobj recommended for full OLE extraction' 'WARN'
+            Write-Log 'ESCALATION: RTF alerts present - rtfobj recommended for full OLE extraction' 'WARN'
         }
 
         Write-Log ("UNIT_END: Write-ConsoleReport | Duration: {0:N3}s" -f $unitTimer.Elapsed.TotalSeconds)
@@ -1230,9 +1243,9 @@ $separator
 
             $escalation = ''
             if ($Script:FileFormat -eq 'CFBF' -and ($alerts.Count -gt 0 -or $suspicious.Count -gt 0)) {
-                $escalation = 'CFBF findings present — run olevba (oletools) on source for full macro decode'
+                $escalation = 'CFBF findings present - run olevba (oletools) on source for full macro decode'
             } elseif ($Script:FileFormat -eq 'RTF' -and $alerts.Count -gt 0) {
-                $escalation = 'RTF ALERT-level findings — run rtfobj (oletools) on source for full OLE extraction'
+                $escalation = 'RTF ALERT-level findings - run rtfobj (oletools) on source for full OLE extraction'
             }
 
             $subtype = if ($Script:FileFormat -eq 'OOXML') { $Script:OOXMLSubtype } else { $null }
@@ -1300,7 +1313,7 @@ $separator
         }
     }
     elseif ($DryRun) {
-        Write-Log '[DRY-RUN] Would write JSON findings report to $OutputDir — skipped'
+        Write-Log '[DRY-RUN] Would write JSON findings report to $OutputDir - skipped'
     }
 
     #region UNIT: Cleanup-Workspace ---------------------------------
@@ -1318,8 +1331,8 @@ $separator
         Write-Log ("UNIT_END: Cleanup-Workspace | Duration: {0:N3}s" -f $unitTimer.Elapsed.TotalSeconds)
     }
     catch {
-        # Cleanup failures are WARN not FATAL — analyst can remove manually.
-        Write-Log "Cleanup-Workspace | Could not remove workspace — manual cleanup needed: '$Script:WorkingDir' | Error='$($_.Exception.Message)'" 'WARN'
+        # Cleanup failures are WARN not FATAL - analyst can remove manually.
+        Write-Log "Cleanup-Workspace | Could not remove workspace - manual cleanup needed: '$Script:WorkingDir' | Error='$($_.Exception.Message)'" 'WARN'
     }
 }
 
@@ -1355,7 +1368,7 @@ try {
     Invoke-Report
     Invoke-PhaseGate  -PhaseName 'Report' -Summary "Verdict=$Script:Verdict | LogFile='$Script:LogFile'"
 
-    # Final immutability assertion — the contract the whole rewrite exists to prove.
+    # Final immutability assertion - the contract the whole rewrite exists to prove.
     Assert-SourceUnchanged
 
     $Script:ScriptTimer.Stop()

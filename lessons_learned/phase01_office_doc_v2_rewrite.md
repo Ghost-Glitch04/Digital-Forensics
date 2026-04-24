@@ -399,6 +399,52 @@ had catch-and-WARN demotion, acceptable without retry).
 
 ---
 
+### 15. BOM-required encoding is a latent hazard; strict-ASCII source is the durable fix (v2.0.1)
+
+Added 2026-04-24 after v2.0.1 was cut in response to a user's first
+live run on PowerShell 5.1 producing the same "Try missing Catch/Finally"
+parse errors that phase01:13 had nominally closed.
+
+The v2.0.0 fix (phase01:13) added a UTF-8 BOM to the script. That
+closed the symptom in the author's environment. But it left a latent
+hazard: the file's PS 5.1-parseability depended on **every subsequent
+copy operation** preserving the 3-byte BOM prefix. Many common
+workflows don't:
+- Text editors that save as UTF-8 without BOM (VS Code default on
+  Linux/macOS, Notepad++ depending on setting, Vim with fileencoding=utf8)
+- PowerShell round-trips via `Get-Content | Set-Content` without
+  `-Encoding UTF8BOM` (the `-Encoding UTF8` value differs between PS
+  5.1 and PS 7 — PS 5.1 writes WITH BOM, PS 7 writes WITHOUT)
+- Some download tools that strip BOM for "normalization"
+- A user's deliberate BOM-stripping via any .NET-free copy workflow
+
+The user hit exactly this: they copied the script to `C:\Windows\TEMP`
+via some path that stripped the BOM, and PS 5.1 emitted the same parse
+errors v2.0.0 was supposed to have fixed. Error shape: `Try statement
+missing its Catch or Finally block` and `Missing closing '}'` at random-
+looking line numbers — the classic BOM-stripping signature.
+
+v2.0.1 fixes this at the source by making the script content strict
+ASCII: replaced all 59 em-dash characters (U+2014) with ASCII hyphens,
+and the single right-arrow (U+2192) with `->`. Comment readability
+loses nothing meaningful; BOM-independence gains everything. BOM is
+retained as defense-in-depth (it signals UTF-8 to editors and serves
+as a canary if non-ASCII is re-introduced in future edits).
+
+Stress test performed before shipping: deliberately strip the BOM from
+a copy, parse that copy on PS 5.1. Before v2.0.1: cascade of parse
+errors. After v2.0.1: `PARSE OK`.
+
+**Lesson:** For any PowerShell script that must run on both PS 5.1 and
+PS 7+, and that will be redistributed through copies / downloads /
+editor round-trips, strict ASCII source content is more reliable than
+depending on UTF-8 BOM preservation. The BOM is a contract that every
+tool in the distribution chain must respect; many don't. ASCII content
+has no such contract. Keep the BOM as belt-and-suspenders but never
+depend on it alone for correctness.
+
+---
+
 ## Carry-Forward Items
 
 | CF-ID | Summary | Opened | Notes |

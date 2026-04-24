@@ -135,6 +135,35 @@ Next  : (none — landed clean) Test fixture: synthetic CFBF header +
         Real password-protected .docx / .doc corpus fixture deferred
         to Phase 7 test scaffolding (CF-1).
 
+### [2026-04-24] Attempt 7 - ASCII hardening for BOM-independent parseability (v2.0.1)
+Tried : A user ran the v2.0.0 script on PowerShell 5.1 after copying it
+        to C:\Windows\TEMP. The copy stripped the UTF-8 BOM somewhere
+        in the distribution path. PS 5.1 read the BOM-less file as
+        Windows-1252, mis-decoded 59 em-dashes + 1 right-arrow as
+        garbage sequences, parser emitted cascading errors at lines
+        576 / 596 / 769 / 379 (exact same symptom class as Attempt 4).
+Result: FAILED at user site despite v2.0.0 having fixed it locally.
+Reason: Attempt 4's fix (add UTF-8 BOM) depended on every subsequent
+        copy operation preserving the 3-byte BOM prefix. Many common
+        workflows strip BOMs silently:
+          - Text editors saving as UTF-8-without-BOM (VS Code on
+            non-Windows, Notepad++ with certain settings)
+          - Get-Content | Set-Content round-trips in PS 7 (which
+            writes WITHOUT BOM for -Encoding UTF8)
+          - Some download tools that "normalize" encoding
+          - Manual copy flows that go through non-BOM-aware tools
+        The BOM-dependent fix was a partial fix that only held until
+        the script left the author's workstation.
+Next  : (completed - shipped as v2.0.1) Restricted script source to
+        strict ASCII: replaced all 59 em-dashes (U+2014) with ASCII
+        hyphens and the 1 right-arrow (U+2192) with '->'. Retained
+        the UTF-8 BOM as defense-in-depth and as a canary for future
+        non-ASCII re-introduction. Stress test: stripped BOM from a
+        copy deliberately, parsed on PS 5.1 - PARSE OK. Full 6-test
+        verification on PS 5.1 + pwsh 7 = 12/12 PASS post-fix.
+        Performance unchanged. Script is now BOM-independent and
+        safe against any distribution path.
+
 ---
 
 ## Edge cases discovered during testing

@@ -173,8 +173,84 @@ with a 6-byte needle (68× faster).
 
 ---
 
+### Keep .ps1 source strict ASCII when cross-runtime (PS 5.1 + PS 7) use is expected
+<!-- tags: powershell, file-encoding, ascii, ps51, redistribution -->
+
+**When:** Writing a PowerShell script that (a) must run on both Windows
+PowerShell 5.1 AND PowerShell 7+, AND (b) will be redistributed through
+copies, downloads, git clones, or editor round-trips between the author
+and end users.
+
+**Not when:** The script is internal-only and author-maintained, where
+the author controls the distribution path and can guarantee UTF-8 BOM
+preservation through every hop. Then non-ASCII content (em-dashes,
+curly quotes, Unicode bullets) is fine with a UTF-8 BOM.
+
+**Rule:** Restrict `.ps1` source to strict ASCII content (code + comments
++ log messages + string literals). Keep a UTF-8 BOM as defense-in-depth
+(and as a canary for future non-ASCII re-introduction), but do not depend
+on it alone for parseability. BOM preservation is a fragile contract that
+many editors and copy tools break silently; ASCII content has no such
+contract.
+
+```powershell
+# Audit for any non-ASCII in a script:
+$p = 'MyScript.ps1'
+$content = [System.IO.File]::ReadAllText($p, [System.Text.UTF8Encoding]::new($true))
+$bad = 0
+for ($i = 0; $i -lt $content.Length; $i++) {
+    if ([int][char]$content[$i] -gt 127) { $bad++ }
+}
+"Non-ASCII chars: $bad"
+
+# Stress-test that parsing still works if the BOM is stripped:
+$stripped = Join-Path $env:TEMP 'no-bom-test.ps1'
+$bytes = [System.IO.File]::ReadAllBytes($p)
+[System.IO.File]::WriteAllBytes($stripped, $bytes[3..($bytes.Length - 1)])
+$errors = $null
+[System.Management.Automation.Language.Parser]::ParseFile($stripped, [ref]$null, [ref]$errors) | Out-Null
+if ($errors) { 'FAIL - script depends on BOM; remove non-ASCII content' } else { 'OK - BOM-independent' }
+```
+
+Common non-ASCII characters that look innocent but break this:
+- em-dash `—` (U+2014) -> replace with `-` or `--`
+- en-dash `–` (U+2013) -> replace with `-`
+- right-arrow `→` (U+2192) -> replace with `->`
+- left-arrow `←` (U+2190) -> replace with `<-`
+- curly-quote `"` `"` (U+201C / U+201D) -> replace with `"`
+- curly-apostrophe `'` `'` (U+2018 / U+2019) -> replace with `'`
+- ellipsis `…` (U+2026) -> replace with `...`
+- bullet `•` (U+2022) -> replace with `*` or `-`
+- non-breaking space ` ` -> replace with regular space
+- byte-order mark in the MIDDLE of a file (editor bug) -> remove
+
+**Why:** Invoke-OfficeDocAnalysis v2.0.0 initially fixed PS 5.1
+parseability by adding a UTF-8 BOM to a script containing 59 em-dashes
++ 1 right-arrow (phase01:13). That worked in the author's environment
+but left the script dependent on every subsequent copy preserving the
+3-byte BOM prefix. A user's first production run copied the script via
+a path that stripped the BOM and reproduced the original parse errors
+on PS 5.1 — the same symptom the BOM fix had supposedly closed.
+v2.0.1 restricted the script to strict ASCII content as the durable
+fix. Stress-tested: BOM-stripped copy now parses cleanly on PS 5.1.
+
+**Supersedes:** powershell.md -> "Save .ps1 files with a UTF-8 BOM if they contain any non-ASCII characters"
+**Supersession reason:** narrowed
+
+**Companions:** powershell.md -> "Prefer .NET Framework 4.x-compatible APIs for cross-runtime PowerShell scripts", powershell.md -> "Validate parseability before first execution of PowerShell scripts >500 lines"
+
+*Source: phase01:15*
+
+---
+
 ### Save .ps1 files with a UTF-8 BOM if they contain any non-ASCII characters
 <!-- tags: powershell, file-encoding, bom, ps51 -->
+
+**Superseded by:** powershell.md -> "Keep .ps1 source strict ASCII when cross-runtime (PS 5.1 + PS 7) use is expected"
+**Supersession reason:** narrowed - the BOM fix solves the local-author case
+but leaves the redistribution / copy-operation case still broken. The
+ASCII rule solves both.
+
 
 **When:** Authoring or editing a `.ps1` file that contains any characters
 outside the ASCII range — em-dashes, curly quotes, accented letters,
